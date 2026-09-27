@@ -1,6 +1,7 @@
 // Букмарклет для админки Кейтаро: замена pixel/token/домена в кампаниях по куску нейминга.
-// Pixel и token — отдельные поля, общие на все строки. Строки — только куски нейминга, по одному.
-// Домены — отдельным полем, по одному на строку в том же порядке (можно склеенные подряд).
+// Две вкладки, работают независимо:
+//   «Pixel / Token» — pixel и token общие на все строки; строки — куски нейминга, по одному.
+//   «Домены» — строки и домены поровну, домен N → кампании строки N (домены можно склеенные подряд).
 // Меняет то же, что kt_set_pixel.py: parameters.sub_id_16/17.placeholder и pixel=/token= в notes.
 // Сборка ссылки: python build_bookmarklet.py
 (() => {
@@ -32,19 +33,34 @@
   .m{color:#666;font-size:12px;word-break:break-all}
   .ok{color:#1a7f37}.err{color:#c62828}.warn{color:#a15c00}
   #log{font:11px/1.5 Consolas,monospace;color:#555;max-height:160px;overflow:auto;margin-top:8px}
+  .tabs{display:flex;gap:4px;margin:12px 0 4px;border-bottom:1px solid #ccd}
+  .tabs a{padding:6px 12px;cursor:pointer;border:1px solid transparent;border-bottom:0;border-radius:6px 6px 0 0;color:#555;margin-bottom:-1px}
+  .tabs a.on{border-color:#ccd;background:#fff;color:#1c1e21;font-weight:600}
+  .pane{display:none}.pane.on{display:block}
+  .two{display:flex;gap:8px}.two>div{flex:1;min-width:0}
 </style>
 <div class="w">
   <h3>Кейтаро: замена pixel / token / домена <b id="x">✕</b></h3>
   <label>API-ключ Кейтаро <small>— Настройки → API; запоминается в этом браузере</small></label>
   <input id="key" type="password" autocomplete="off">
-  <label>Pixel <small>— один на все строки ниже; пусто — не меняем</small></label>
-  <input id="pixel" type="text" autocomplete="off" placeholder="1067868436152332">
-  <label>Token <small>— один на все строки ниже; пусто — не меняем</small></label>
-  <input id="token" type="text" autocomplete="off" placeholder="EAAO...">
-  <label>Строки <small>— кусок нейминга (кабинет), по одному в строке</small></label>
-  <textarea id="rows" placeholder="1441411593399889&#10;1947923029177194"></textarea>
-  <label>Домены <small>— необязательно; по одному на строку выше, в том же порядке. Пусто — домен не меняется</small></label>
-  <textarea id="doms" placeholder="bestvigor.eimin1.com&#10;chiefteam.da1fai.com"></textarea>
+  <div class="tabs"><a id="t-px" data-mode="px">Pixel / Token</a><a id="t-dom" data-mode="dom">Домены</a></div>
+  <div class="pane" id="p-px">
+    <label>Pixel <small>— один на все строки ниже; пусто — не меняем</small></label>
+    <input id="pixel" type="text" autocomplete="off" placeholder="1067868436152332">
+    <label>Token <small>— один на все строки ниже; пусто — не меняем</small></label>
+    <input id="token" type="text" autocomplete="off" placeholder="EAAO...">
+    <label>Строки <small>— кусок нейминга (кабинет), по одному в строке</small></label>
+    <textarea id="rows" placeholder="1441411593399889&#10;1947923029177194"></textarea>
+  </div>
+  <div class="pane" id="p-dom">
+    <div class="two">
+      <div><label>Строки <small>— кусок нейминга, по одному</small></label>
+        <textarea id="rowsDom" placeholder="1441411593399889&#10;1947923029177194"></textarea></div>
+      <div><label>Домены <small>— столько же, в том же порядке</small></label>
+        <textarea id="doms" placeholder="bestvigor.eimin1.com&#10;chiefteam.da1fai.com"></textarea></div>
+    </div>
+    <div class="m" id="cnt"></div>
+  </div>
   <div class="act"><button id="check">Проверить</button><button id="apply" disabled>Применить</button></div>
   <div id="out"></div>
   <div id="log"></div>
@@ -54,7 +70,23 @@
   $('key').value = localStorage.getItem(LS) || '';
   $('x').onclick = () => host.remove();
 
-  const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  let mode = 'px';
+  const ls = (k, v) => { try { return v === undefined ? localStorage.getItem(k) : localStorage.setItem(k, v); } catch { return null; } };
+  function setMode(m) {
+    mode = m;
+    ls('ktpx_tab', m);
+    for (const t of ['px', 'dom']) {
+      $('t-' + t).classList.toggle('on', t === m);
+      $('p-' + t).classList.toggle('on', t === m);
+    }
+    // план от другой вкладки применять нельзя
+    plan = [];
+    $('out').innerHTML = '';
+    $('apply').disabled = true;
+  }
+  root.querySelectorAll('.tabs a').forEach(a => { a.onclick = () => setMode(a.dataset.mode); });
+
+  const el =(tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
   const log = (msg, cls = '') => $('log').prepend(el('div', cls, new Date().toLocaleTimeString() + '  ' + msg));
   const short = v => !v ? '(пусто)' : (v.length > 30 ? v.slice(0, 14) + '…' + v.slice(-6) : v);
   const ph = (p, k) => ((p || {})[k] || {}).placeholder;
@@ -72,15 +104,15 @@
     return raw.trim() ? JSON.parse(raw) : null;
   }
 
-  // pixel и token — общие на все строки; в строках только нейминг
-  function parseRows(pixel, token) {
+  // в строках только нейминг, по одному
+  function parseRows(id, hint) {
     const out = [];
-    for (const line of $('rows').value.split(/\r?\n/)) {
+    for (const line of $(id).value.split(/\r?\n/)) {
       const parts = line.split(/[\s;,]+/).filter(Boolean);
       if (!parts.length) continue;
       const [name, ...rest] = parts;
-      const r = { name, pixel, token, errors: [] };
-      if (rest.length) r.errors.push('в строке лишнее: ' + rest.join(' ') + ' — pixel и token вписываются в поля выше');
+      const r = { name, errors: [] };
+      if (rest.length) r.errors.push('в строке лишнее: ' + rest.join(' ') + hint);
       out.push(r);
     }
     return out;
@@ -99,13 +131,20 @@
     plan = [];
     if (!$('key').value.trim()) return log('Нет API-ключа', 'err');
     localStorage.setItem(LS, $('key').value.trim());
-    const pixel = $('pixel').value.trim(), token = $('token').value.trim();
-    if (pixel && !/^\d{6,}$/.test(pixel)) return log('Pixel — только цифры', 'err');
-    if (token && !/^EA[A-Za-z0-9]{20,}$/.test(token)) return log('Token не похож на токен FB (должен начинаться с EAA)', 'err');
-    const rows = parseRows(pixel || undefined, token || undefined);
+    let rows, doms = [];
+    if (mode === 'px') {
+      const pixel = $('pixel').value.trim(), token = $('token').value.trim();
+      if (!pixel && !token) return log('Впиши pixel и/или token', 'err');
+      if (pixel && !/^\d{6,}$/.test(pixel)) return log('Pixel — только цифры', 'err');
+      if (token && !/^EA[A-Za-z0-9]{20,}$/.test(token)) return log('Token не похож на токен FB (должен начинаться с EAA)', 'err');
+      rows = parseRows('rows', ' — pixel и token вписываются в поля выше');
+      rows.forEach(r => { r.pixel = pixel || undefined; r.token = token || undefined; });
+    } else {
+      rows = parseRows('rowsDom', ' — домены пишутся в соседнее поле');
+      doms = parseDomains();
+      if (doms.length !== rows.length) return log(`Строк ${rows.length}, доменов ${doms.length} — должно быть поровну`, 'err');
+    }
     if (!rows.length) return log('Строк нет', 'err');
-    const doms = parseDomains();
-    if (doms.length && doms.length !== rows.length) return log(`Доменов ${doms.length}, а строк ${rows.length} — должно быть поровну`, 'err');
     $('check').disabled = true;
     try {
       const camps = await api('GET', '/campaigns');
@@ -123,9 +162,6 @@
         if (!r.domain) r.errors.push(`домена ${doms[i]} нет в Кейтаро — сначала добавь его`);
         else if (doms.indexOf(doms[i]) !== i) r.errors.push(`домен ${doms[i]} повторяется в списке`);
       });
-      for (const r of rows) {
-        if (!r.pixel && !r.token && !r.domain && !r.errors.length) r.errors.push('нечего менять: нет ни pixel, ни token, ни домена');
-      }
       const seen = new Map();
       for (const r of rows) {
         r.camps = r.errors.length ? [] : camps.filter(c => nameRe(r.name).test(c.name || ''));
@@ -134,8 +170,9 @@
       }
       for (const r of rows) {
         const box = el('div', 'it');
-        box.append(el('div', '', `${r.name} → pixel ${r.pixel || '(не трогаем)'} · token ${r.token ? short(r.token) : '(не трогаем)'}` +
-          (r.domainName ? ` · домен ${r.domainName}` : '')));
+        box.append(el('div', '', mode === 'px'
+          ? `${r.name} → pixel ${r.pixel || '(не трогаем)'} · token ${r.token ? short(r.token) : '(не трогаем)'}`
+          : `${r.name} → домен ${r.domainName}`));
         r.errors.forEach(t => box.append(el('div', 'm err', t)));
         if (r.domain) {
           const busy = camps.filter(c => c.domain_id === r.domain.id && !r.camps.includes(c));
@@ -211,6 +248,16 @@
     log(`Итого: OK ${ok}, ошибок ${fail}`, fail ? 'err' : 'ok');
   }
 
+  // счётчик на вкладке доменов: строк и доменов должно быть поровну
+  function count() {
+    const n = parseRows('rowsDom', '').length, d = parseDomains().length;
+    $('cnt').className = 'm ' + (n && n === d ? 'ok' : n || d ? 'err' : '');
+    $('cnt').textContent = n || d ? `строк ${n} · доменов ${d}` + (n === d ? ' ✓' : ' — должно быть поровну') : '';
+  }
+  $('rowsDom').oninput = count;
+  $('doms').oninput = count;
+
   $('check').onclick = check;
   $('apply').onclick = apply;
+  setMode(ls('ktpx_tab') === 'dom' ? 'dom' : 'px');
 })();
