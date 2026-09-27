@@ -1,5 +1,5 @@
 // Букмарклет для админки Кейтаро: замена pixel/token/домена в кампаниях по куску нейминга.
-// Строка: <кусок нейминга> <pixel> <token> — через пробел/таб/;/, (можно вставить из таблицы).
+// Pixel и token — отдельные поля, общие на все строки. Строки — только куски нейминга, по одному.
 // Домены — отдельным полем, по одному на строку в том же порядке (можно склеенные подряд).
 // Меняет то же, что kt_set_pixel.py: parameters.sub_id_16/17.placeholder и pixel=/token= в notes.
 // Сборка ссылки: python build_bookmarklet.py
@@ -37,8 +37,12 @@
   <h3>Кейтаро: замена pixel / token / домена <b id="x">✕</b></h3>
   <label>API-ключ Кейтаро <small>— Настройки → API; запоминается в этом браузере</small></label>
   <input id="key" type="password" autocomplete="off">
-  <label>Строки <small>— кусок нейминга (кабинет) · pixel · token; по одной в строке</small></label>
-  <textarea id="rows" placeholder="1441411593399889  1067868436152332  EAAO...&#10;1947923029177194  1029758310085003  EAAO..."></textarea>
+  <label>Pixel <small>— один на все строки ниже; пусто — не меняем</small></label>
+  <input id="pixel" type="text" autocomplete="off" placeholder="1067868436152332">
+  <label>Token <small>— один на все строки ниже; пусто — не меняем</small></label>
+  <input id="token" type="text" autocomplete="off" placeholder="EAAO...">
+  <label>Строки <small>— кусок нейминга (кабинет), по одному в строке</small></label>
+  <textarea id="rows" placeholder="1441411593399889&#10;1947923029177194"></textarea>
   <label>Домены <small>— необязательно; по одному на строку выше, в том же порядке. Пусто — домен не меняется</small></label>
   <textarea id="doms" placeholder="bestvigor.eimin1.com&#10;chiefteam.da1fai.com"></textarea>
   <div class="act"><button id="check">Проверить</button><button id="apply" disabled>Применить</button></div>
@@ -68,15 +72,15 @@
     return raw.trim() ? JSON.parse(raw) : null;
   }
 
-  function parseRows() {
+  // pixel и token — общие на все строки; в строках только нейминг
+  function parseRows(pixel, token) {
     const out = [];
     for (const line of $('rows').value.split(/\r?\n/)) {
       const parts = line.split(/[\s;,]+/).filter(Boolean);
       if (!parts.length) continue;
       const [name, ...rest] = parts;
-      const r = { name, pixel: rest.find(x => /^\d{6,}$/.test(x)), token: rest.find(x => /^EA[A-Za-z0-9]{20,}$/.test(x)), errors: [] };
-      const junk = rest.filter(x => x !== r.pixel && x !== r.token);
-      if (junk.length) r.errors.push('не понял: ' + junk.join(' '));
+      const r = { name, pixel, token, errors: [] };
+      if (rest.length) r.errors.push('в строке лишнее: ' + rest.join(' ') + ' — pixel и token вписываются в поля выше');
       out.push(r);
     }
     return out;
@@ -95,7 +99,10 @@
     plan = [];
     if (!$('key').value.trim()) return log('Нет API-ключа', 'err');
     localStorage.setItem(LS, $('key').value.trim());
-    const rows = parseRows();
+    const pixel = $('pixel').value.trim(), token = $('token').value.trim();
+    if (pixel && !/^\d{6,}$/.test(pixel)) return log('Pixel — только цифры', 'err');
+    if (token && !/^EA[A-Za-z0-9]{20,}$/.test(token)) return log('Token не похож на токен FB (должен начинаться с EAA)', 'err');
+    const rows = parseRows(pixel || undefined, token || undefined);
     if (!rows.length) return log('Строк нет', 'err');
     const doms = parseDomains();
     if (doms.length && doms.length !== rows.length) return log(`Доменов ${doms.length}, а строк ${rows.length} — должно быть поровну`, 'err');
