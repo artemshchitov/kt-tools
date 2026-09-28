@@ -1,7 +1,8 @@
 // Букмарклет для админки Кейтаро: замена pixel/token/домена в кампаниях по куску нейминга.
-// Две вкладки, работают независимо:
+// Три вкладки, работают независимо:
 //   «Pixel / Token» — pixel и token общие на все строки; строки — куски нейминга, по одному.
 //   «Домены» — строки и домены поровну, домен N → кампании строки N (домены можно склеенные подряд).
+//   «Дубли» — кампания-образец по ID клонируется по разу на каждую строку; кабинет в названии → нейминг строки.
 // Меняет то же, что kt_set_pixel.py: parameters.sub_id_16/17.placeholder и pixel=/token= в notes.
 // Сборка ссылки: python build_bookmarklet.py
 (() => {
@@ -43,7 +44,7 @@
   <h3>Кейтаро: замена pixel / token / домена <b id="x">✕</b></h3>
   <label>API-ключ Кейтаро <small>— Настройки → API; запоминается в этом браузере</small></label>
   <input id="key" type="password" autocomplete="off">
-  <div class="tabs"><a id="t-px" data-mode="px">Pixel / Token</a><a id="t-dom" data-mode="dom">Домены</a></div>
+  <div class="tabs"><a id="t-px" data-mode="px">Pixel / Token</a><a id="t-dom" data-mode="dom">Домены</a><a id="t-dup" data-mode="dup">Дубли</a></div>
   <div class="pane" id="p-px">
     <label>Pixel <small>— один на все строки ниже; пусто — не меняем</small></label>
     <input id="pixel" type="text" autocomplete="off" placeholder="1067868436152332">
@@ -61,6 +62,15 @@
     </div>
     <div class="m" id="cnt"></div>
   </div>
+  <div class="pane" id="p-dup">
+    <label>ID кампании в Кейтаро <small>— образец, с неё делаются дубли</small></label>
+    <input id="srcId" type="text" autocomplete="off" placeholder="1234">
+    <label>Кабинет в названии образца <small>— этот кусок заменится неймингом строки; пусто — найдётся сам (длинное число в названии)</small></label>
+    <input id="srcCab" type="text" autocomplete="off" placeholder="1441411593399889">
+    <label>Нейминги кабинетов <small>— по одному в строке; сколько строк, столько дублей</small></label>
+    <textarea id="rowsDup" placeholder="1947923029177194&#10;1067868436152332"></textarea>
+    <div class="m" id="cntDup"></div>
+  </div>
   <div class="act"><button id="check">Проверить</button><button id="apply" disabled>Применить</button></div>
   <div id="out"></div>
   <div id="log"></div>
@@ -75,7 +85,7 @@
   function setMode(m) {
     mode = m;
     ls('ktpx_tab', m);
-    for (const t of ['px', 'dom']) {
+    for (const t of ['px', 'dom', 'dup']) {
       $('t-' + t).classList.toggle('on', t === m);
       $('p-' + t).classList.toggle('on', t === m);
     }
@@ -131,6 +141,7 @@
     plan = [];
     if (!$('key').value.trim()) return log('Нет API-ключа', 'err');
     localStorage.setItem(LS, $('key').value.trim());
+    if (mode === 'dup') return checkDup();
     let rows, doms = [];
     if (mode === 'px') {
       const pixel = $('pixel').value.trim(), token = $('token').value.trim();
@@ -207,7 +218,86 @@
     }
   }
 
+  // ---------- дубли: кампания-образец × нейминги кабинетов ----------
+
+  async function checkDup() {
+    const id = $('srcId').value.trim();
+    if (!/^\d+$/.test(id)) return log('ID кампании — только цифры', 'err');
+    const rows = parseRows('rowsDup', ' — один нейминг в строке');
+    if (!rows.length) return log('Строк нет', 'err');
+    $('check').disabled = true;
+    try {
+      let src;
+      try { src = await api('GET', `/campaigns/${id}`); } catch (e) { return log(`Кампания ${id} не читается: ${e.message}`, 'err'); }
+      if (!src || !src.id) return log(`Кампании ${id} нет в Кейтаро`, 'err');
+      // кабинет в названии образца: из поля или единственное длинное число в названии
+      let cab = $('srcCab').value.trim();
+      if (!cab) {
+        const nums = [...new Set((src.name || '').match(/\d{10,}/g) || [])];
+        if (nums.length !== 1) return log(`В названии «${src.name}» ${nums.length ? 'несколько длинных чисел: ' + nums.join(', ') : 'нет кабинета'} — впиши кабинет образца в поле`, 'err');
+        cab = nums[0];
+        $('srcCab').value = cab;
+      }
+      if (!nameRe(cab).test(src.name || '')) return log(`В названии «${src.name}» нет куска ${cab}`, 'err');
+      const names = new Set((await api('GET', '/campaigns')).map(c => c.name));
+      const head = el('div', 'it');
+      head.append(el('div', '', `образец ${src.id} ${src.name}${src.state && src.state !== 'active' ? ' [' + src.state + ']' : ''}`));
+      head.append(el('div', 'm', `кабинет в названии: ${cab} → меняется на нейминг строки; потоки, домен, параметры копируются`));
+      $('out').append(head);
+      const box = el('div', 'it');
+      rows.forEach((r, i) => {
+        r.newName = (src.name || '').replace(new RegExp(nameRe(cab).source, 'gu'), r.name);
+        if (rows.findIndex(x => x.name === r.name) !== i) r.errors.push('нейминг повторяется в списке');
+        if (r.name === cab) r.errors.push('это кабинет самого образца');
+        if (names.has(r.newName)) r.errors.push('кампания с таким названием уже есть');
+        const line = el('div', r.errors.length ? 'm err' : 'm', `${r.name}: ${r.newName}` + (r.errors.length ? ' — ' + r.errors.join('; ') + ', пропуск' : ''));
+        box.append(line);
+        if (!r.errors.length) plan.push({ dup: true, src, row: r, line });
+      });
+      $('out').append(box);
+      log(`К созданию дублей: ${plan.length} из ${rows.length}`, plan.length ? 'ok' : 'warn');
+      $('apply').disabled = !plan.length;
+    } catch (e) {
+      log(e.message, 'err');
+    } finally {
+      $('check').disabled = false;
+    }
+  }
+
+  async function applyDup() {
+    $('apply').disabled = true;
+    $('check').disabled = true;
+    let ok = 0, fail = 0;
+    for (const { src, row: r, line } of plan) {
+      let copy = null;
+      try {
+        const res = await api('POST', `/campaigns/${src.id}/clone`);
+        copy = Array.isArray(res) ? res[0] : res;
+        if (!copy?.id) throw new Error('Кейтаро не вернул ID дубля');
+        await api('PUT', `/campaigns/${copy.id}`, { name: r.newName });
+        // сверка: перечитываем то, что записали
+        const back = await api('GET', `/campaigns/${copy.id}`);
+        if (back.name !== r.newName) throw new Error(`сверка: название «${back.name}»`);
+        line.className = 'm ok';
+        line.textContent = `✓ ${copy.id} ${r.newName}: создан и подтверждён`;
+        log(`дубль ${copy.id}: ${r.newName}`, 'ok');
+        ok++;
+      } catch (e) {
+        // дубль мог создаться, а переименование — нет: называем его, чтобы не потерялся
+        const msg = (copy?.id ? `дубль ${copy.id} создан, но: ` : '') + e.message;
+        line.className = 'm err';
+        line.textContent = `✗ ${r.name}: ${msg}`;
+        log(`${r.name}: ${msg}`, 'err');
+        fail++;
+      }
+    }
+    plan = [];
+    $('check').disabled = false;
+    log(`Итого дублей: OK ${ok}, ошибок ${fail}`, fail ? 'err' : 'ok');
+  }
+
   async function apply() {
+    if (mode === 'dup') return applyDup();
     $('apply').disabled = true;
     $('check').disabled = true;
     let ok = 0, fail = 0;
@@ -256,8 +346,12 @@
   }
   $('rowsDom').oninput = count;
   $('doms').oninput = count;
+  $('rowsDup').oninput = () => {
+    const n = parseRows('rowsDup', '').length;
+    $('cntDup').textContent = n ? `будет дублей: ${n}` : '';
+  };
 
   $('check').onclick = check;
   $('apply').onclick = apply;
-  setMode(ls('ktpx_tab') === 'dom' ? 'dom' : 'px');
+  setMode(['dom', 'dup'].includes(ls('ktpx_tab')) ? ls('ktpx_tab') : 'px');
 })();
