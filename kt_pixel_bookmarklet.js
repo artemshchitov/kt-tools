@@ -389,7 +389,8 @@
       const b = el('div', 'it g ' + g.code);
       b.append(el('div', '', `${g.geo}  ${g.verdict}`));
       b.append(el('div', 'm', `активных ${g.active} из ${g.total} · ROI 3д ${fr(g.roi3)} (${g.sales3} прод) · 7д ${fr(g.roi7)} (${g.sales7} прод) · профит 7д ${fm(g.profit7)}`));
-      if (g.action) b.append(el('div', 'm', '→ ' + g.action));
+      // действие, образец и креатив — отдельными строками
+      if (g.action) g.action.split('; ').forEach(t => b.append(el('div', 'm', '→ ' + t)));
       if (g.template) {
         // образец для масштаба сразу во вкладку «Дубли»
         const btn = el('button', 'an-b', `→ в Дубли: ${g.template.id}`);

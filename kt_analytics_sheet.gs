@@ -21,6 +21,7 @@ const SETTINGS = [
   ['Мин. продаж за период', 'minSales', 5],
   ['Масштаб: ROI 3д от, %', 'scaleRoi3', 30],
   ['Масштаб: ROI 7д от, %', 'scaleRoi7', 20],
+  ['Масштаб: максимум +кампаний за раз', 'scaleMax', 2],
   ['Сокращать: ROI 3д ниже, %', 'cutRoi3', 10],
   ['Сокращать: ROI 7д ниже, %', 'cutRoi7', 5],
   ['Креатив рабочий: ROI от, %', 'creoOkRoi', 20],
@@ -248,15 +249,28 @@ function analyse() {
   const geo = Object.keys(geos).sort((a, b) => profit(geos[b].m7) - profit(geos[a].m7)).map(name => {
     const g = geos[name], active = g.camps.filter(id => live.has(id));
     const [code, verdict] = geoVerdict(c, g.m3, g.m7);
-    let action = '', template = null, off = [];
+    let action = '', template = null, creo = null, off = [];
     if (code === 'scale') {
       const good = active.filter(id => m7of(id).sales >= c.minSales && roi(m7of(id)) > 0);
       const best = good.sort((a, b) => roi(m7of(b)) - roi(m7of(a)))[0];
-      const n = Math.max(1, Math.ceil(Math.max(active.length, 1) * (roi(g.m7) >= 40 ? 0.5 : 0.3)));
-      action = '+' + n + ' кампаний';
+      // добавляем осторожно: +1, +2 только при очень сильном гео с запасом кампаний
+      const n = Math.min(c.scaleMax, roi(g.m7) >= 50 && active.length >= 3 ? 2 : 1);
+      action = '+' + n + (n === 1 ? ' кампания' : ' кампании');
       if (best) {
-        template = { id: best, name: byid[best].name, roi7: roi(m7of(best)) };
+        template = { id: best, name: byid[best].name, roi7: roi(m7of(best)), creo: top(campCreo[best]) };
         action += ', образец: ' + best + ' ' + byid[best].name + ' (ROI 7д ' + fr(template.roi7) + ')';
+      }
+      // креатив для новых кампаний: лучший в этой стране по всем группам (страна клика)
+      const cc = UK_CC[name] || name, pool = creoGeo[cc] || {};
+      const ok = Object.keys(pool).filter(k => pool[k].sales >= c.minSales && roi(pool[k]) >= c.creoOkRoi)
+        .sort((a, b) => profit(pool[b]) - profit(pool[a]));
+      const cd = k => '«' + k + '» (' + cc + ': ROI 7д ' + fr(roi(pool[k])) + ', продаж ' + pool[k].sales + ')';
+      if (ok.length) {
+        creo = { name: ok[0], roi7: roi(pool[ok[0]]), sales: pool[ok[0]].sales, backup: ok[1] || '' };
+        action += '; креатив ' + cd(ok[0]) + (template && template.creo === ok[0] ? ' — как в образце' : '') +
+          (ok[1] ? ', запасной ' + cd(ok[1]) : '');
+      } else if (template && template.creo) {
+        action += '; креатив как в образце «' + template.creo + '» (других с ROI ≥ ' + c.creoOkRoi + '% и ' + c.minSales + '+ продажами в ' + cc + ' нет)';
       }
     } else if (code === 'cut') {
       off = active.filter(id => profit(m7of(id)) < 0).sort((a, b) => profit(m7of(a)) - profit(m7of(b)));
@@ -267,7 +281,7 @@ function analyse() {
         : 'минус по гео, но активных минусовых кампаний нет — смотри выключенные';
     }
     return {
-      geo: name, active: active.length, total: g.camps.length, code, verdict, action, template, off,
+      geo: name, active: active.length, total: g.camps.length, code, verdict, action, template, creo, off,
       roi3: roi(g.m3), sales3: g.m3.sales, profit3: profit(g.m3),
       roi7: roi(g.m7), sales7: g.m7.sales, profit7: profit(g.m7), cost7: g.m7.cost,
     };
