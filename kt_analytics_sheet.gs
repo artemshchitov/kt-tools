@@ -136,7 +136,7 @@ function cfg() {
   // «IT=27, DE=45» -> { IT: 27, DE: 45 }
   c.fixed = {};
   String(c.fixedPrices || '').split(/[,;\s]+/).forEach(t => {
-    const m = t.match(/^([A-Za-z]{2})=(\d+(?:[.,]\d+)?)$/);
+    const m = t.match(/^([A-Za-z]{2}(?:\([A-Za-z]{2}\))?)=(\d+(?:[.,]\d+)?)$/);
     if (m) c.fixed[m[1].toUpperCase()] = Number(m[2].replace(',', '.'));
   });
   return c;
@@ -183,7 +183,13 @@ const profit = m => m.revenue - m.cost;
 const roi = m => m.cost > 0 ? profit(m) / m.cost * 100 : null;
 const fr = v => v == null ? '—' : (v >= 0 ? '+' : '') + Math.round(v) + '%';
 const fm = v => (v >= 0 ? '+' : '') + Math.round(v) + '$';
-const geoOf = n => ((n || '').match(/^\s*([A-Z]{2})\b/) || [, '??'])[1];
+// гео из начала названия; язык в скобках сразу после — отдельное гео: «CH(FR) …» -> CH(FR), «IT (10828) …» -> IT
+const geoOf = n => {
+  const m = (n || '').match(/^\s*([A-Z]{2})(?:\s*\(\s*([A-Z]{2})\s*\))?/);
+  return m ? (m[2] ? m[1] + '(' + m[2] + ')' : m[1]) : '??';
+};
+// страна клика для гео: CH(FR) -> CH, UK -> GB
+const ccOf = g => UK_CC[g.slice(0, 2)] || g.slice(0, 2);
 const r1 = v => v == null ? '' : Math.round(v * 10) / 10;
 
 function geoVerdict(c, m3, m7) {
@@ -221,7 +227,10 @@ function analyse() {
   const today = day(0), y = day(1), d3 = day(3), d7 = day(7);
   const dm = s => s.slice(8, 10) + '.' + s.slice(5, 7);
 
-  const camps = (api(c, 'GET', '/campaigns') || []).filter(x => x.group_id === c.group);
+  const allCamps = api(c, 'GET', '/campaigns') || [];
+  const nameAll = {};
+  allCamps.forEach(x => { nameAll[x.id] = x.name; });
+  const camps = allCamps.filter(x => x.group_id === c.group);
   if (!camps.length) throw new Error('в группе ' + c.group + ' нет кампаний (или ключ её не видит)');
   const byid = {};
   camps.forEach(x => { byid[x.id] = x; });
@@ -246,12 +255,19 @@ function analyse() {
     if (creo) { campCreo[id] = campCreo[id] || {}; add(campCreo[id][creo] = campCreo[id][creo] || M(), r); }
     if (cc) { campCc[id] = campCc[id] || {}; add(campCc[id][cc] = campCc[id][cc] || M(), r); }
   });
-  // рейтинг креативов: все доступные группы, гео = страна клика (7д)
+  // рейтинг креативов: все доступные группы, гео = страна клика (7д).
+  // если в названии кампании язык (CH(FR)) и страна клика совпадает — креатив идёт в пул CH(FR), не в общий CH
   const creoGeo = {};
-  report(c, d7, y, ['country_code', 'sub_id_3']).forEach(r => {
+  report(c, d7, y, ['campaign_id', 'country_code', 'sub_id_3']).forEach(r => {
     const creo = String(r.sub_id_3 || '').trim(), cc = String(r.country_code || '').trim().toUpperCase();
-    if (creo && cc) { creoGeo[cc] = creoGeo[cc] || {}; add(creoGeo[cc][creo] = creoGeo[cc][creo] || M(), r); }
+    if (!creo || !cc) return;
+    const g = geoOf(nameAll[num(r.campaign_id)]);
+    const key = g.includes('(') && ccOf(g) === cc ? g : cc;
+    creoGeo[key] = creoGeo[key] || {};
+    add(creoGeo[key][creo] = creoGeo[key][creo] || M(), r);
   });
+  // пул креативов для гео: CH(FR) — свой языковой, остальные — по стране клика
+  const poolKey = g => g.includes('(') ? g : ccOf(g);
   const top = o => Object.keys(o || {}).sort((a, b) => o[b].clicks - o[a].clicks)[0] || '';
 
   // ---- 1. гео ----
@@ -294,7 +310,7 @@ function analyse() {
         action += ', образец: ' + best + ' ' + byid[best].name + ' (ROI 7д ' + fr(template.roi7) + ')';
       }
       // креатив для новых кампаний: лучший в этой стране по всем группам (страна клика)
-      const cc = UK_CC[name] || name, pool = creoGeo[cc] || {};
+      const cc = poolKey(name), pool = creoGeo[cc] || {};
       const ok = Object.keys(pool).filter(k => pool[k].sales >= c.minSales && roi(pool[k]) >= c.creoOkRoi)
         .sort((a, b) => profit(pool[b]) - profit(pool[a]));
       const cd = k => '«' + k + '» (' + cc + ': ROI 7д ' + fr(roi(pool[k])) + ', продаж ' + pool[k].sales + ')';
@@ -338,7 +354,8 @@ function analyse() {
   const losers = [...live].filter(id => byid[id] && profit(m7of(id)) < -limitOf(geoOf(byid[id].name)))
     .sort((a, b) => profit(m7of(a)) - profit(m7of(b))).slice(0, c.losersTop).map(id => {
       const x = byid[id], m = m7of(id), g = geoOf(x.name);
-      const cc = top(campCc[id]) || UK_CC[g] || g, creo = top(campCreo[id]);
+      // языковое гео (CH(FR)) — свой пул; иначе основная страна клика кампании
+      const cc = g.includes('(') ? g : (top(campCc[id]) || ccOf(g)), creo = top(campCreo[id]);
       const pool = creoGeo[cc] || {}, cur = pool[creo];
       const alts = Object.keys(pool).filter(k => k !== creo && pool[k].sales >= c.minSales && roi(pool[k]) >= c.creoOkRoi)
         .sort((a, b) => profit(pool[b]) - profit(pool[a]));
