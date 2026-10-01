@@ -1,8 +1,9 @@
 // Букмарклет для админки Кейтаро: замена pixel/token/домена в кампаниях по куску нейминга.
-// Три вкладки, работают независимо:
+// Четыре вкладки, работают независимо:
 //   «Pixel / Token» — pixel и token общие на все строки; строки — куски нейминга, по одному.
 //   «Домены» — строки и домены поровну, домен N → кампании строки N (домены можно склеенные подряд).
 //   «Дубли» — кампания-образец по ID клонируется по разу на каждую строку; кабинет в названии → нейминг строки.
+//   «Аналитика» — при открытии тянет последний анализ из Google Таблицы (kt_analytics_sheet.gs, веб-приложение).
 // Меняет то же, что kt_set_pixel.py: parameters.sub_id_16/17.placeholder и pixel=/token= в notes.
 // Сборка ссылки: python build_bookmarklet.py
 (() => {
@@ -39,12 +40,18 @@
   .tabs a.on{border-color:#ccd;background:#fff;color:#1c1e21;font-weight:600}
   .pane{display:none}.pane.on{display:block}
   .two{display:flex;gap:8px}.two>div{flex:1;min-width:0}
+  button.sec{background:#e4e6eb;color:#1c1e21}
+  .g{border-left:4px solid #ccd}.g.scale{border-left-color:#1a7f37}.g.cut{border-left-color:#c62828}
+  .g.rise,.g.dip{border-left-color:#d4a000}.g.few{border-left-color:#999}
+  .an-h{font-weight:600;margin:10px 0 6px}
+  .an-b{padding:2px 8px;font-size:11px;margin:4px 0 0}
+  details summary{cursor:pointer;color:#666;margin:6px 0}
 </style>
 <div class="w">
   <h3>Кейтаро: замена pixel / token / домена <b id="x">✕</b></h3>
   <label>API-ключ Кейтаро <small>— Настройки → API; запоминается в этом браузере</small></label>
   <input id="key" type="password" autocomplete="off">
-  <div class="tabs"><a id="t-px" data-mode="px">Pixel / Token</a><a id="t-dom" data-mode="dom">Домены</a><a id="t-dup" data-mode="dup">Дубли</a></div>
+  <div class="tabs"><a id="t-px" data-mode="px">Pixel / Token</a><a id="t-dom" data-mode="dom">Домены</a><a id="t-dup" data-mode="dup">Дубли</a><a id="t-an" data-mode="an">Аналитика</a></div>
   <div class="pane" id="p-px">
     <label>Pixel <small>— один на все строки ниже; пусто — не меняем</small></label>
     <input id="pixel" type="text" autocomplete="off" placeholder="1067868436152332">
@@ -71,7 +78,17 @@
     <textarea id="rowsDup" placeholder="1947923029177194&#10;1067868436152332"></textarea>
     <div class="m" id="cntDup"></div>
   </div>
-  <div class="act"><button id="check">Проверить</button><button id="apply" disabled>Применить</button></div>
+  <div class="pane" id="p-an">
+    <div class="act"><button id="anLoad" class="sec">Обновить из таблицы</button><button id="anRun">Пересчитать сейчас</button></div>
+    <div id="anOut"></div>
+    <details id="anCfg"><summary>подключение к Google Таблице</summary>
+      <label>Ссылка веб-приложения <small>— меню таблицы «KT аналитика → Ссылка для букмарклета»</small></label>
+      <input id="anUrl" type="text" autocomplete="off" placeholder="https://script.google.com/macros/s/.../exec">
+      <label>Ключ букмарклета <small>— там же</small></label>
+      <input id="anTok" type="password" autocomplete="off">
+    </details>
+  </div>
+  <div class="act" id="mainAct"><button id="check">Проверить</button><button id="apply" disabled>Применить</button></div>
   <div id="out"></div>
   <div id="log"></div>
 </div>`;
@@ -85,10 +102,12 @@
   function setMode(m) {
     mode = m;
     ls('ktpx_tab', m);
-    for (const t of ['px', 'dom', 'dup']) {
+    for (const t of ['px', 'dom', 'dup', 'an']) {
       $('t-' + t).classList.toggle('on', t === m);
       $('p-' + t).classList.toggle('on', t === m);
     }
+    // у аналитики свои кнопки; «Проверить/Применить» там не нужны
+    $('mainAct').style.display = m === 'an' ? 'none' : '';
     // план от другой вкладки применять нельзя
     plan = [];
     $('out').innerHTML = '';
@@ -353,5 +372,76 @@
 
   $('check').onclick = check;
   $('apply').onclick = apply;
-  setMode(['dom', 'dup'].includes(ls('ktpx_tab')) ? ls('ktpx_tab') : 'px');
+  // ---------- аналитика из Google Таблицы ----------
+
+  const fr = v => v == null ? '—' : (v >= 0 ? '+' : '') + Math.round(v) + '%';
+  const fm = v => (v >= 0 ? '+' : '') + Math.round(v) + '$';
+
+  function renderAn(j) {
+    const o = $('anOut');
+    o.innerHTML = '';
+    const when = new Date(j.generated);
+    o.append(el('div', 'm', j.head + ' · посчитано ' + when.toLocaleString()));
+    // анализ не сегодняшний — триггер мог не отработать
+    if (j.date !== new Date().toLocaleDateString('sv')) o.append(el('div', 'm warn', 'Анализ не за сегодня — нажми «Пересчитать сейчас»'));
+    o.append(el('div', 'an-h', 'Гео'));
+    for (const g of j.geo || []) {
+      const b = el('div', 'it g ' + g.code);
+      b.append(el('div', '', `${g.geo}  ${g.verdict}`));
+      b.append(el('div', 'm', `активных ${g.active} из ${g.total} · ROI 3д ${fr(g.roi3)} (${g.sales3} прод) · 7д ${fr(g.roi7)} (${g.sales7} прод) · профит 7д ${fm(g.profit7)}`));
+      if (g.action) b.append(el('div', 'm', '→ ' + g.action));
+      if (g.template) {
+        // образец для масштаба сразу во вкладку «Дубли»
+        const btn = el('button', 'an-b', `→ в Дубли: ${g.template.id}`);
+        btn.onclick = () => { setMode('dup'); $('srcId').value = g.template.id; $('srcCab').value = ''; $('rowsDup').focus(); };
+        b.append(btn);
+      }
+      o.append(b);
+    }
+    o.append(el('div', 'an-h', 'Минусовые кампании'));
+    if (!(j.losers || []).length) o.append(el('div', 'm', 'нет'));
+    for (const l of j.losers || []) {
+      const b = el('div', 'it g ' + (l.action === 'swap' ? 'rise' : 'cut'));
+      b.append(el('div', '', `${l.id} ${l.name}`));
+      b.append(el('div', 'm', `${l.cc} · профит 7д ${fm(l.profit7)} · ROI 7д ${fr(l.roi7)} · 3д ${fr(l.roi3)} · креатив «${l.creo || '?'}»`));
+      b.append(el('div', 'm', '→ ' + l.verdict));
+      o.append(b);
+    }
+    const n = c => (j.geo || []).filter(g => g.code === c).length;
+    $('t-an').textContent = 'Аналитика' + (n('scale') ? ' 🟢' + n('scale') : '') + (n('cut') ? ' 🔴' + n('cut') : '');
+  }
+
+  async function loadAn(run) {
+    const u = $('anUrl').value.trim(), t = $('anTok').value.trim();
+    if (!u || !t) {
+      $('anOut').innerHTML = '';
+      $('anOut').append(el('div', 'm warn', 'Впиши ссылку и ключ из меню таблицы «KT аналитика → Ссылка для букмарклета»'));
+      $('anCfg').open = true;
+      return;
+    }
+    ls('ktan_url', u);
+    ls('ktan_tok', t);
+    $('anLoad').disabled = $('anRun').disabled = true;
+    $('anOut').innerHTML = '';
+    $('anOut').append(el('div', 'm', run ? 'пересчитываю в таблице… (до пары минут)' : 'загружаю из таблицы…'));
+    try {
+      const res = await fetch(u + (u.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(t) + (run ? '&run=1' : ''));
+      const j = await res.json();
+      if (j.error) throw new Error(j.error);
+      renderAn(j);
+    } catch (e) {
+      $('anOut').innerHTML = '';
+      $('anOut').append(el('div', 'm err', 'Не загрузилось: ' + e.message));
+    } finally {
+      $('anLoad').disabled = $('anRun').disabled = false;
+    }
+  }
+  $('anUrl').value = ls('ktan_url') || '';
+  $('anTok').value = ls('ktan_tok') || '';
+  $('anLoad').onclick = () => loadAn(false);
+  $('anRun').onclick = () => loadAn(true);
+
+  setMode(['dom', 'dup', 'an'].includes(ls('ktpx_tab')) ? ls('ktpx_tab') : 'px');
+  // при открытии сразу тянем аналитику — итог виден на ярлыке вкладки
+  if ($('anUrl').value && $('anTok').value) loadAn(false);
 })();
