@@ -2,7 +2,8 @@
  * KT аналитика — Google Таблица + Apps Script. Только читает Кейтаро, в трекере ничего не меняет.
  *
  * Каждое утро (триггер) или по кнопке:
- *   1. ГЕО группы (гео из названия «DE (…) (cab) …»): ROI 3д и 7д без сегодня, активные кампании (клики вчера/сегодня),
+ *   1. ГЕО группы (гео из названия «DE (…) (cab) …»): ROI 3д и 7д без сегодня; кампании: активные в КТ и с трафиком
+ *      (активна в КТ и вчера ≥ «Трафик: мин. кликов вчера» — отсекает клики ботов/модерации),
  *      вердикт: масштабировать (+N, образец) / держать / следить / сокращать (кого выключить).
  *   2. МИНУСОВЫЕ кампании группы: заменить креатив (sub_id_3, рейтинг по ВСЕМ группам, гео = страна клика) или выключить.
  *   3. Листы «Гео», «Минусовые», «Кампании», «История» + JSON для букмарклета (doGet).
@@ -19,6 +20,7 @@ const SETTINGS = [
   ['КТ адрес', 'url', 'https://harryhole.info'],
   ['Группа кампаний', 'group', 264],
   ['Мин. продаж за период', 'minSales', 5],
+  ['Трафик: мин. кликов вчера', 'minClicks', 15],
   ['Масштаб: ROI 3д от, %', 'scaleRoi3', 30],
   ['Масштаб: ROI 7д от, %', 'scaleRoi7', 20],
   ['Масштаб: максимум +кампаний за раз', 'scaleMax', 2],
@@ -219,8 +221,11 @@ function analyse() {
     report(c, from, to, ['campaign_id'], ids).forEach(r => { const id = num(r.campaign_id); add(o[id] = o[id] || M(), r); });
     return o;
   };
-  const s3 = perCamp(d3, y), s7 = perCamp(d7, y), lv = perCamp(y, today);
-  const live = new Set(Object.keys(lv).filter(id => lv[id].clicks > 0).map(Number));
+  const s3 = perCamp(d3, y), s7 = perCamp(d7, y), lv = perCamp(y, y);
+  const clicksY = id => (lv[id] || M()).clicks;
+  // активна в КТ — по статусу; с трафиком — активна и вчера набрала порог кликов
+  const ktOn = new Set(camps.filter(x => x.state === 'active').map(x => x.id));
+  const live = new Set(ids.filter(id => ktOn.has(id) && clicksY(id) >= c.minClicks));
   const m3of = id => s3[id] || M(), m7of = id => s7[id] || M();
 
   // креатив и основная страна кампании (7д)
@@ -247,7 +252,7 @@ function analyse() {
     add(g.m7, m7of(x.id));
   });
   const geo = Object.keys(geos).sort((a, b) => profit(geos[b].m7) - profit(geos[a].m7)).map(name => {
-    const g = geos[name], active = g.camps.filter(id => live.has(id));
+    const g = geos[name], active = g.camps.filter(id => live.has(id)), ktActive = g.camps.filter(id => ktOn.has(id)).length;
     const [code, verdict] = geoVerdict(c, g.m3, g.m7);
     let action = '', template = null, creo = null, off = [];
     if (code === 'scale') {
@@ -278,10 +283,13 @@ function analyse() {
       action = off.length
         ? (keep ? 'сократить до ' + keep + ': выключить ' : 'выключить все: ') + off.map(id =>
             id + ' (' + (m7of(id).sales ? fr(roi(m7of(id))) : '0 продаж, ' + fm(profit(m7of(id)))) + ')').join(', ')
-        : 'минус по гео, но активных минусовых кампаний нет — смотри выключенные';
+        : 'с трафиком минусовых кампаний нет';
+      // включены в КТ, но трафика нет — в минусовом гео их держать незачем
+      const idle = g.camps.filter(id => ktOn.has(id) && !live.has(id));
+      if (idle.length) action += '; включены в КТ без трафика (<' + c.minClicks + ' кликов вчера): ' + idle.join(', ') + ' — выключить';
     }
     return {
-      geo: name, active: active.length, total: g.camps.length, code, verdict, action, template, creo, off,
+      geo: name, active: active.length, ktActive, total: g.camps.length, code, verdict, action, template, creo, off,
       roi3: roi(g.m3), sales3: g.m3.sales, profit3: profit(g.m3),
       roi7: roi(g.m7), sales7: g.m7.sales, profit7: profit(g.m7), cost7: g.m7.cost,
     };
@@ -321,14 +329,15 @@ function analyse() {
       };
     });
 
-  const head = 'Кейтаро · группа ' + c.group + ' · ' + dm(today) + '  (3д: ' + dm(d3) + '–' + dm(y) + ' · 7д: ' + dm(d7) + '–' + dm(y) + ')';
+  const head = 'Кейтаро · группа ' + c.group + ' · ' + dm(today) + '  (3д: ' + dm(d3) + '–' + dm(y) + ' · 7д: ' + dm(d7) + '–' + dm(y) +
+    ' · с трафиком: ≥' + c.minClicks + ' кликов за ' + dm(y) + ')';
   const result = { generated: new Date().toISOString(), date: today, head, geo, losers };
 
   // ---- 3. листы ----
   writeSheet(ss, 'Гео', head,
-    ['Гео', 'Активных', 'Всего', 'ROI 3д %', 'Продаж 3д', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Расход 7д', 'Вердикт', 'Действие'],
-    geo.map(g => [g.geo, g.active, g.total, r1(g.roi3), g.sales3, r1(g.profit3), r1(g.roi7), g.sales7, r1(g.profit7), r1(g.cost7), g.verdict, g.action]),
-    geo.map(g => COLORS[g.code] || null), [50, 70, 50, 70, 70, 80, 70, 70, 80, 80, 260, 520]);
+    ['Гео', 'Активных в КТ', 'С трафиком', 'Всего', 'ROI 3д %', 'Продаж 3д', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Расход 7д', 'Вердикт', 'Действие'],
+    geo.map(g => [g.geo, g.ktActive, g.active, g.total, r1(g.roi3), g.sales3, r1(g.profit3), r1(g.roi7), g.sales7, r1(g.profit7), r1(g.cost7), g.verdict, g.action]),
+    geo.map(g => COLORS[g.code] || null), [50, 90, 80, 50, 70, 70, 80, 70, 70, 80, 80, 260, 520]);
   writeSheet(ss, 'Минусовые', head,
     ['ID', 'Кампания', 'Гео', 'Страна клика', 'Креатив', 'ROI 3д %', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д',
       'Креатив в гео: ROI %', 'Креатив в гео: продаж', 'Замена', 'Замена: ROI %', 'Вердикт'],
@@ -337,22 +346,22 @@ function analyse() {
     losers.map(l => l.action === 'swap' ? COLORS.rise : COLORS.cut), [60, 300, 50, 60, 140, 70, 80, 70, 70, 80, 90, 90, 140, 90, 520]);
   const all = ids.slice().sort((a, b) => profit(m7of(b)) - profit(m7of(a)));
   writeSheet(ss, 'Кампании', head,
-    ['ID', 'Кампания', 'Гео', 'Живой трафик', 'Креатив', 'ROI 3д %', 'Продаж 3д', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Расход 7д'],
-    all.map(id => [id, byid[id].name, geoOf(byid[id].name), live.has(id) ? 'да' : 'нет', top(campCreo[id]),
+    ['ID', 'Кампания', 'Гео', 'Статус КТ', 'Кликов вчера', 'С трафиком', 'Креатив', 'ROI 3д %', 'Продаж 3д', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Расход 7д'],
+    all.map(id => [id, byid[id].name, geoOf(byid[id].name), byid[id].state || '', clicksY(id), live.has(id) ? 'да' : 'нет', top(campCreo[id]),
       r1(roi(m3of(id))), m3of(id).sales, r1(profit(m3of(id))), r1(roi(m7of(id))), m7of(id).sales, r1(profit(m7of(id))), r1(m7of(id).cost)]),
-    null, [60, 320, 50, 90, 140, 70, 70, 80, 70, 70, 80, 80]);
+    null, [60, 320, 50, 80, 80, 80, 140, 70, 70, 80, 70, 70, 80, 80]);
 
   // история: одна строка на гео в день, повторный запуск за тот же день перезаписывает
   const hs = ss.getSheetByName('История') || ss.insertSheet('История');
-  if (!hs.getLastRow()) hs.appendRow(['Дата', 'Гео', 'Активных', 'ROI 3д %', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Вердикт']);
+  if (!hs.getLastRow()) hs.appendRow(['Дата', 'Гео', 'С трафиком', 'ROI 3д %', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Вердикт', 'Активных в КТ']);
   const hv = hs.getDataRange().getValues();
   for (let i = hv.length - 1; i >= 1; i--) {
     const d = hv[i][0] instanceof Date ? Utilities.formatDate(hv[i][0], tz, 'yyyy-MM-dd') : String(hv[i][0]);
     if (d === today) hs.deleteRow(i + 1);
   }
   if (geo.length) {
-    hs.getRange(hs.getLastRow() + 1, 1, geo.length, 8)
-      .setValues(geo.map(g => [today, g.geo, g.active, r1(g.roi3), r1(g.roi7), g.sales7, r1(g.profit7), g.code]));
+    hs.getRange(hs.getLastRow() + 1, 1, geo.length, 9)
+      .setValues(geo.map(g => [today, g.geo, g.active, r1(g.roi3), r1(g.roi7), g.sales7, r1(g.profit7), g.code, g.ktActive]));
   }
 
   saveJson(result);
