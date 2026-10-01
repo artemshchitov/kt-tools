@@ -419,6 +419,14 @@
       $('anCfg').open = true;
       return;
     }
+    if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(u)) {
+      $('anOut').innerHTML = '';
+      $('anOut').append(el('div', 'm err', /\/dev$/.test(u)
+        ? 'Это тестовая ссылка /dev — она пускает только редакторов скрипта. Нужна /exec: Apps Script → Развернуть → Управление развёртываниями → Веб-приложение → URL'
+        : 'Ссылка должна быть вида https://script.google.com/macros/s/…/exec'));
+      $('anCfg').open = true;
+      return;
+    }
     ls('ktan_url', u);
     ls('ktan_tok', t);
     $('anLoad').disabled = $('anRun').disabled = true;
@@ -432,6 +440,14 @@
     } catch (e) {
       $('anOut').innerHTML = '';
       $('anOut').append(el('div', 'm err', 'Не загрузилось: ' + e.message));
+      if (e instanceof TypeError) {
+        // различаем: Google отдал не JSON (доступ не «Все») или запрос вообще не ушёл (политика сайта/сеть)
+        let reached = false;
+        try { await fetch(u, { mode: 'no-cors' }); reached = true; } catch { /* не ушёл */ }
+        $('anOut').append(el('div', 'm warn', reached
+          ? 'Google отвечает, но не отдаёт данные этому сайту: развёртывание закрыто. Apps Script → Развернуть → Управление развёртываниями → ✎ → «У кого есть доступ: Все» (не «все с аккаунтом Google») → Развернуть. Ссылка /exec останется той же.'
+          : 'Запрос до Google не дошёл: админка Кейтаро запрещает внешние запросы или их режет расширение/сеть. Открой ссылку+?t=ключ в новой вкладке — если там JSON, напиши мне.'));
+      }
     } finally {
       $('anLoad').disabled = $('anRun').disabled = false;
     }
