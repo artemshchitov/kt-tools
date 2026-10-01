@@ -26,7 +26,7 @@ const SETTINGS = [
   ['Масштаб: максимум +кампаний за раз', 'scaleMax', 2],
   ['Сокращать: ROI 3д ниже, %', 'cutRoi3', 10],
   ['Сокращать: ROI 7д ниже, %', 'cutRoi7', 5],
-  ['Общая цена продажи, $ (для гео без цены на листе «Цена продажи»)', 'salePrice', ''],
+  ['Фиксированная цена продажи по гео (GEO=цена через запятую; остальные гео — авто по выплате)', 'fixedPrices', 'IT=27'],
   ['Допустимый минус кампании, × цены продажи', 'lossK', 1.5],
   ['Сокращать: максимум выключений в гео за раз', 'cutMax', 2],
   ['Креатив рабочий: ROI от, %', 'creoOkRoi', 20],
@@ -133,30 +133,13 @@ function cfg() {
     c[key] = (v === '' || v == null) ? def : (typeof def === 'number' ? Number(v) : String(v));
   }
   c.url = c.url.replace(/\/+$/, '');
-  c.salePrice = Number(c.salePrice) || 0;
-  // цена продажи по гео: строки «Цена продажи: DE» | 45 на листе «Настройки»
+  // «IT=27, DE=45» -> { IT: 27, DE: 45 }
+  c.fixed = {};
+  String(c.fixedPrices || '').split(/[,;\s]+/).forEach(t => {
+    const m = t.match(/^([A-Za-z]{2})=(\d+(?:[.,]\d+)?)$/);
+    if (m) c.fixed[m[1].toUpperCase()] = Number(m[2].replace(',', '.'));
+  });
   return c;
-}
-
-// целевая цена продажи по гео — лист «Цена продажи» (Гео | Цена, $). Новые гео дописываются пустыми
-const PRICE_DEFAULTS = { IT: 27 };
-function loadPrices(ss, geoNames) {
-  let sh = ss.getSheetByName('Цена продажи');
-  if (!sh) {
-    sh = ss.insertSheet('Цена продажи');
-    sh.getRange(1, 1, 1, 2).setValues([['Гео', 'Цена продажи, $']]).setFontWeight('bold');
-    sh.setColumnWidth(2, 140);
-  }
-  const rows = sh.getDataRange().getValues().slice(1);
-  const out = {};
-  rows.forEach(r => { const g = String(r[0]).trim().toUpperCase(); if (g && Number(r[1]) > 0) out[g] = Number(r[1]); });
-  const known = new Set(rows.map(r => String(r[0]).trim().toUpperCase()));
-  const add = geoNames.filter(g => g !== '??' && !known.has(g)).sort().map(g => [g, PRICE_DEFAULTS[g] || '']);
-  if (add.length) {
-    sh.getRange(sh.getLastRow() + 1, 1, add.length, 2).setValues(add);
-    add.forEach(([g, p]) => { if (p) out[g] = p; });
-  }
-  return out;
 }
 
 function api(c, method, path, body) {
@@ -282,14 +265,12 @@ function analyse() {
   // цена продажи: задана для гео → общая из настроек → выплата за продажу по гео → по группе
   const grp = M();
   Object.keys(geos).forEach(n => add(grp, geos[n].all7));
-  // цена продажи: лист «Цена продажи» → общая из «Настроек» → выплата за продажу (запасной вариант, помечается ⚠)
-  const prices = loadPrices(ss, Object.keys(geos));
+  // цена продажи: фиксированная из «Настроек» (IT=27) → авто: выплата за продажу по гео за 7д → по группе
   const priceOf = n => {
-    if (prices[n]) return [prices[n], 'лист «Цена продажи»'];
-    if (c.salePrice) return [c.salePrice, 'общая из настроек'];
+    if (c.fixed[n]) return [c.fixed[n], 'фиксированная'];
     const a = geos[n] && geos[n].all7;
-    if (a && a.sales) return [a.revenue / a.sales, '⚠ не задана — выплата по гео'];
-    return [grp.sales ? grp.revenue / grp.sales : 0, '⚠ не задана — выплата по группе'];
+    if (a && a.sales) return [a.revenue / a.sales, 'авто: выплата по гео'];
+    return [grp.sales ? grp.revenue / grp.sales : 0, 'авто: выплата по группе'];
   };
   // допустимый минус кампании за 7д = lossK × цена продажи гео
   const limitOf = n => c.lossK * priceOf(n)[0];
