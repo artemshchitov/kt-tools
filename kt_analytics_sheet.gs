@@ -159,13 +159,15 @@ function api(c, method, path, body) {
 function report(c, from, to, dims, ids) {
   const body = {
     range: { from: from + ' 00:00:00', to: to + ' 23:59:59' },
-    dimensions: dims, measures: ['clicks', 'sales', 'revenue', 'cost'],
+    // доход — только подтверждённые продажи (sale_revenue); revenue в Кейтаро включает лиды в холде
+    dimensions: dims, measures: ['clicks', 'sales', 'sale_revenue', 'revenue', 'cost'],
     filters: ids ? [{ name: 'campaign_id', operator: 'IN_LIST', expression: ids }] : [],
     limit: 10000, offset: 0,
   };
   const rows = [];
   for (;;) {
     const part = (api(c, 'POST', '/report/build', body) || {}).rows || [];
+    part.forEach(r => { r.hold = num(r.revenue) - num(r.sale_revenue); r.revenue = r.sale_revenue; });
     rows.push(...part);
     if (part.length < body.limit) return rows;
     body.offset += body.limit;
@@ -175,8 +177,8 @@ function report(c, from, to, dims, ids) {
 // ---------- метрики ----------
 
 const num = x => { const v = Number(x); return isFinite(v) ? v : 0; };
-const M = () => ({ clicks: 0, sales: 0, revenue: 0, cost: 0 });
-function add(m, r) { for (const k of ['clicks', 'sales', 'revenue', 'cost']) m[k] += num(r[k]); return m; }
+const M = () => ({ clicks: 0, sales: 0, revenue: 0, cost: 0, hold: 0 });
+function add(m, r) { for (const k of ['clicks', 'sales', 'revenue', 'cost', 'hold']) m[k] += num(r[k]); return m; }
 const profit = m => m.revenue - m.cost;
 const roi = m => m.cost > 0 ? profit(m) / m.cost * 100 : null;
 const fr = v => v == null ? '—' : (v >= 0 ? '+' : '') + Math.round(v) + '%';
@@ -325,7 +327,7 @@ function analyse() {
     return {
       geo: name, active: active.length, ktActive, total: g.camps.length, code, verdict, action, template, creo, off,
       roi3: roi(g.m3), sales3: g.m3.sales, profit3: profit(g.m3),
-      roi7: roi(g.m7), sales7: g.m7.sales, profit7: profit(g.m7), cost7: g.m7.cost,
+      roi7: roi(g.m7), sales7: g.m7.sales, profit7: profit(g.m7), cost7: g.m7.cost, revenue7: g.m7.revenue, hold7: g.m7.hold,
       roi7All: roi(g.all7), profit7All: profit(g.all7), price, priceSrc, limit,
     };
   });
@@ -374,11 +376,11 @@ function analyse() {
 
   // ---- 3. листы ----
   writeSheet(ss, 'Гео', head,
-    ['Гео', 'Активных в КТ', 'С трафиком', 'Всего', 'ROI 3д %', 'Продаж 3д', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Расход 7д',
+    ['Гео', 'Активных в КТ', 'С трафиком', 'Всего', 'ROI 3д %', 'Продаж 3д', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Доход 7д (подтв.)', 'Расход 7д', 'Холд 7д (не в профите)',
       'ROI 7д все кампании %', 'Цена продажи', 'Допуск минуса', 'Вердикт', 'Действие'],
-    geo.map(g => [g.geo, g.ktActive, g.active, g.total, r1(g.roi3), g.sales3, r1(g.profit3), r1(g.roi7), g.sales7, r1(g.profit7), r1(g.cost7),
+    geo.map(g => [g.geo, g.ktActive, g.active, g.total, r1(g.roi3), g.sales3, r1(g.profit3), r1(g.roi7), g.sales7, r1(g.profit7), r1(g.revenue7), r1(g.cost7), r1(g.hold7),
       r1(g.roi7All), r1(g.price) + ' (' + g.priceSrc + ')', -Math.round(g.limit), g.verdict, g.action]),
-    geo.map(g => COLORS[g.code] || null), [50, 90, 80, 50, 70, 70, 80, 70, 70, 80, 80, 100, 150, 80, 260, 560]);
+    geo.map(g => COLORS[g.code] || null), [50, 90, 80, 50, 70, 70, 80, 70, 70, 80, 90, 80, 100, 100, 150, 80, 260, 560]);
   writeSheet(ss, 'Минусовые', head,
     ['ID', 'Кампания', 'Гео', 'Страна клика', 'Креатив', 'ROI 3д %', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д',
       'Допуск минуса', 'Креатив в гео: ROI %', 'Креатив в гео: продаж', 'Замена', 'Замена: ROI %', 'Вердикт'],
@@ -387,10 +389,11 @@ function analyse() {
     losers.map(l => l.action === 'swap' ? COLORS.rise : COLORS.cut), [60, 300, 50, 60, 140, 70, 80, 70, 70, 80, 80, 90, 90, 140, 90, 520]);
   const all = ids.slice().sort((a, b) => profit(m7of(b)) - profit(m7of(a)));
   writeSheet(ss, 'Кампании', head,
-    ['ID', 'Кампания', 'Гео', 'Статус КТ', 'Кликов вчера', 'С трафиком', 'Креатив', 'ROI 3д %', 'Продаж 3д', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Расход 7д'],
+    ['ID', 'Кампания', 'Гео', 'Статус КТ', 'Кликов вчера', 'С трафиком', 'Креатив', 'ROI 3д %', 'Продаж 3д', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Доход 7д (подтв.)', 'Расход 7д', 'Холд 7д'],
     all.map(id => [id, byid[id].name, geoOf(byid[id].name), byid[id].state || '', clicksY(id), live.has(id) ? 'да' : 'нет', top(campCreo[id]),
-      r1(roi(m3of(id))), m3of(id).sales, r1(profit(m3of(id))), r1(roi(m7of(id))), m7of(id).sales, r1(profit(m7of(id))), r1(m7of(id).cost)]),
-    null, [60, 320, 50, 80, 80, 80, 140, 70, 70, 80, 70, 70, 80, 80]);
+      r1(roi(m3of(id))), m3of(id).sales, r1(profit(m3of(id))), r1(roi(m7of(id))), m7of(id).sales, r1(profit(m7of(id))),
+      r1(m7of(id).revenue), r1(m7of(id).cost), r1(m7of(id).hold)]),
+    null, [60, 320, 50, 80, 80, 80, 140, 70, 70, 80, 70, 70, 80, 90, 80, 80]);
 
   // история: одна строка на гео в день, повторный запуск за тот же день перезаписывает
   const hs = ss.getSheetByName('История') || ss.insertSheet('История');
