@@ -388,7 +388,8 @@
     for (const g of j.geo || []) {
       const b = el('div', 'it g ' + g.code);
       b.append(el('div', '', `${g.geo}  ${g.verdict}`));
-      b.append(el('div', 'm', `в КТ ${g.ktActive ?? '?'} · с трафиком ${g.active} · всего ${g.total} · ROI 3д ${fr(g.roi3)} (${g.sales3} прод) · 7д ${fr(g.roi7)} (${g.sales7} прод) · профит 7д ${fm(g.profit7)}`));
+      b.append(el('div', 'm', `в КТ ${g.ktActive ?? '?'} · с трафиком ${g.active} · всего ${g.total} · ROI 3д ${fr(g.roi3)} (${g.sales3} прод) · 7д ${fr(g.roi7)} (${g.sales7} прод) · профит 7д ${fm(g.profit7)}` +
+        (g.limit ? ` · допуск −${Math.round(g.limit)}$ (1 продажа ${Math.round(g.price)}$, ${g.priceSrc})` : '')));
       // действие, образец и креатив — отдельными строками
       if (g.action) g.action.split('; ').forEach(t => b.append(el('div', 'm', '→ ' + t)));
       if (g.template) {

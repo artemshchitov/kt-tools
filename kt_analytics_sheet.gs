@@ -26,6 +26,9 @@ const SETTINGS = [
   ['Масштаб: максимум +кампаний за раз', 'scaleMax', 2],
   ['Сокращать: ROI 3д ниже, %', 'cutRoi3', 10],
   ['Сокращать: ROI 7д ниже, %', 'cutRoi7', 5],
+  ['Целевая цена продажи, $ (пусто — выплата за продажу по гео)', 'salePrice', ''],
+  ['Допустимый минус кампании, × цены продажи', 'lossK', 1.5],
+  ['Сокращать: максимум выключений в гео за раз', 'cutMax', 2],
   ['Креатив рабочий: ROI от, %', 'creoOkRoi', 20],
   ['Минусовых кампаний в разборе', 'losersTop', 10],
   ['Час автозапуска', 'hour', 9],
@@ -130,6 +133,13 @@ function cfg() {
     c[key] = (v === '' || v == null) ? def : (typeof def === 'number' ? Number(v) : String(v));
   }
   c.url = c.url.replace(/\/+$/, '');
+  c.salePrice = Number(c.salePrice) || 0;
+  // цена продажи по гео: строки «Цена продажи: DE» | 45 на листе «Настройки»
+  c.priceGeo = {};
+  Object.keys(vals).forEach(k => {
+    const m = String(k).match(/^Цена продажи:\s*([A-Z]{2})\s*$/);
+    if (m && Number(vals[k]) > 0) c.priceGeo[m[1]] = Number(vals[k]);
+  });
   return c;
 }
 
@@ -244,16 +254,33 @@ function analyse() {
   const top = o => Object.keys(o || {}).sort((a, b) => o[b].clicks - o[a].clicks)[0] || '';
 
   // ---- 1. гео ----
+  // вердикт — по кампаниям с трафиком (что крутится сейчас); по всем кампаниям — справочно и для цены продажи
   const geos = {};
   camps.forEach(x => {
-    const g = geos[geoOf(x.name)] = geos[geoOf(x.name)] || { m3: M(), m7: M(), camps: [] };
+    const n = geoOf(x.name);
+    const g = geos[n] = geos[n] || { m3: M(), m7: M(), all7: M(), camps: [] };
     g.camps.push(x.id);
-    add(g.m3, m3of(x.id));
-    add(g.m7, m7of(x.id));
+    add(g.all7, m7of(x.id));
+    if (live.has(x.id)) { add(g.m3, m3of(x.id)); add(g.m7, m7of(x.id)); }
   });
+  // цена продажи: задана для гео → общая из настроек → выплата за продажу по гео → по группе
+  const grp = M();
+  Object.keys(geos).forEach(n => add(grp, geos[n].all7));
+  const priceOf = n => {
+    if (c.priceGeo[n]) return [c.priceGeo[n], 'задана для гео'];
+    if (c.salePrice) return [c.salePrice, 'из настроек'];
+    const a = geos[n] && geos[n].all7;
+    if (a && a.sales) return [a.revenue / a.sales, 'выплата по гео'];
+    return [grp.sales ? grp.revenue / grp.sales : 0, 'выплата по группе'];
+  };
+  // допустимый минус кампании за 7д = lossK × цена продажи гео
+  const limitOf = n => c.lossK * priceOf(n)[0];
+  const campTxt = id => id + ' (' + fm(profit(m7of(id))) + ', ' + (m7of(id).sales ? 'ROI ' + fr(roi(m7of(id))) : '0 продаж') + ')';
+
   const geo = Object.keys(geos).sort((a, b) => profit(geos[b].m7) - profit(geos[a].m7)).map(name => {
     const g = geos[name], active = g.camps.filter(id => live.has(id)), ktActive = g.camps.filter(id => ktOn.has(id)).length;
-    const [code, verdict] = geoVerdict(c, g.m3, g.m7);
+    const [price, priceSrc] = priceOf(name), limit = limitOf(name);
+    const [code, verdict] = active.length ? geoVerdict(c, g.m3, g.m7) : ['few', '⚫ нет кампаний с трафиком'];
     let action = '', template = null, creo = null, off = [];
     if (code === 'scale') {
       const good = active.filter(id => m7of(id).sales >= c.minSales && roi(m7of(id)) > 0);
@@ -278,27 +305,36 @@ function analyse() {
         action += '; креатив как в образце «' + template.creo + '» (других с ROI ≥ ' + c.creoOkRoi + '% и ' + c.minSales + '+ продажами в ' + cc + ' нет)';
       }
     } else if (code === 'cut') {
-      off = active.filter(id => profit(m7of(id)) < 0).sort((a, b) => profit(m7of(a)) - profit(m7of(b)));
-      const keep = active.length - off.length;
-      action = off.length
-        ? (keep ? 'сократить до ' + keep + ': выключить ' : 'выключить все: ') + off.map(id =>
-            id + ' (' + (m7of(id).sales ? fr(roi(m7of(id))) : '0 продаж, ' + fm(profit(m7of(id)))) + ')').join(', ')
-        : 'с трафиком минусовых кампаний нет';
+      // выключаем только ушедших в минус глубже допуска; не больше cutMax за раз, худшие первыми
+      const bad = active.filter(id => profit(m7of(id)) < -limit).sort((a, b) => profit(m7of(a)) - profit(m7of(b)));
+      const watch = active.filter(id => profit(m7of(id)) < 0 && profit(m7of(id)) >= -limit);
+      off = bad.slice(0, c.cutMax);
+      const parts = [];
+      if (off.length) {
+        parts.push((off.length === active.length ? 'выключить все: ' : 'выключить ' + off.length + ' из ' + active.length + ': ') +
+          off.map(campTxt).join(', '));
+        if (bad.length > off.length) parts.push('ещё за допуском: ' + bad.slice(off.length).map(campTxt).join(', ') + ' — на следующем прогоне');
+      } else {
+        parts.push('кампаний в минусе глубже −' + Math.round(limit) + '$ нет — никого не выключаем');
+      }
+      if (watch.length) parts.push('в пределах допуска, следить: ' + watch.map(campTxt).join(', '));
       // включены в КТ, но трафика нет — в минусовом гео их держать незачем
       const idle = g.camps.filter(id => ktOn.has(id) && !live.has(id));
-      if (idle.length) action += '; включены в КТ без трафика (<' + c.minClicks + ' кликов вчера): ' + idle.join(', ') + ' — выключить';
+      if (idle.length) parts.push('включены в КТ без трафика (<' + c.minClicks + ' кликов вчера): ' + idle.join(', ') + ' — выключить');
+      action = parts.join('; ');
     }
     return {
       geo: name, active: active.length, ktActive, total: g.camps.length, code, verdict, action, template, creo, off,
       roi3: roi(g.m3), sales3: g.m3.sales, profit3: profit(g.m3),
       roi7: roi(g.m7), sales7: g.m7.sales, profit7: profit(g.m7), cost7: g.m7.cost,
+      roi7All: roi(g.all7), profit7All: profit(g.all7), price, priceSrc, limit,
     };
   });
-  const geoCode = {};
-  geo.forEach(g => { geoCode[g.geo] = g.code; });
+  const geoCode = {}, geoOff = {};
+  geo.forEach(g => { geoCode[g.geo] = g.code; geoOff[g.geo] = g.off; });
 
-  // ---- 2. минусовые кампании ----
-  const losers = [...live].filter(id => byid[id] && profit(m7of(id)) < 0)
+  // ---- 2. минусовые кампании: с трафиком и в минусе глубже допуска гео ----
+  const losers = [...live].filter(id => byid[id] && profit(m7of(id)) < -limitOf(geoOf(byid[id].name)))
     .sort((a, b) => profit(m7of(a)) - profit(m7of(b))).slice(0, c.losersTop).map(id => {
       const x = byid[id], m = m7of(id), g = geoOf(x.name);
       const cc = top(campCc[id]) || UK_CC[g] || g, creo = top(campCreo[id]);
@@ -307,7 +343,11 @@ function analyse() {
         .sort((a, b) => profit(pool[b]) - profit(pool[a]));
       const alt = alts[0] || '', am = alt ? pool[alt] : null;
       let verdict, action;
-      if (geoCode[g] === 'cut') {
+      if (geoCode[g] === 'cut' && !geoOff[g].includes(id)) {
+        // гео сокращаем, но за раз не больше cutMax — эта в очереди
+        action = 'off';
+        verdict = '⏳ выключить следующим прогоном — за раз в гео выключаем не больше ' + c.cutMax;
+      } else if (geoCode[g] === 'cut') {
         action = 'off';
         verdict = '❌ выключить — гео в минусе, количество кампаний сокращаем' +
           (alt ? '; если оставлять — только с креативом «' + alt + '» (' + cc + ': ROI 7д ' + fr(roi(am)) + ', продаж ' + am.sales + ')' : '');
@@ -325,7 +365,7 @@ function analyse() {
       return {
         id, name: x.name, geo: g, cc, creo, action, verdict, alt, altRoi: am ? roi(am) : null,
         roi3: roi(m3of(id)), profit3: profit(m3of(id)), roi7: roi(m), sales7: m.sales, profit7: profit(m), cost7: m.cost,
-        creoRoi: cur ? roi(cur) : null, creoSales: cur ? cur.sales : 0,
+        creoRoi: cur ? roi(cur) : null, creoSales: cur ? cur.sales : 0, limit: limitOf(g),
       };
     });
 
@@ -335,15 +375,17 @@ function analyse() {
 
   // ---- 3. листы ----
   writeSheet(ss, 'Гео', head,
-    ['Гео', 'Активных в КТ', 'С трафиком', 'Всего', 'ROI 3д %', 'Продаж 3д', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Расход 7д', 'Вердикт', 'Действие'],
-    geo.map(g => [g.geo, g.ktActive, g.active, g.total, r1(g.roi3), g.sales3, r1(g.profit3), r1(g.roi7), g.sales7, r1(g.profit7), r1(g.cost7), g.verdict, g.action]),
-    geo.map(g => COLORS[g.code] || null), [50, 90, 80, 50, 70, 70, 80, 70, 70, 80, 80, 260, 520]);
+    ['Гео', 'Активных в КТ', 'С трафиком', 'Всего', 'ROI 3д %', 'Продаж 3д', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Расход 7д',
+      'ROI 7д все кампании %', 'Цена продажи', 'Допуск минуса', 'Вердикт', 'Действие'],
+    geo.map(g => [g.geo, g.ktActive, g.active, g.total, r1(g.roi3), g.sales3, r1(g.profit3), r1(g.roi7), g.sales7, r1(g.profit7), r1(g.cost7),
+      r1(g.roi7All), r1(g.price) + ' (' + g.priceSrc + ')', -Math.round(g.limit), g.verdict, g.action]),
+    geo.map(g => COLORS[g.code] || null), [50, 90, 80, 50, 70, 70, 80, 70, 70, 80, 80, 100, 150, 80, 260, 560]);
   writeSheet(ss, 'Минусовые', head,
     ['ID', 'Кампания', 'Гео', 'Страна клика', 'Креатив', 'ROI 3д %', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д',
-      'Креатив в гео: ROI %', 'Креатив в гео: продаж', 'Замена', 'Замена: ROI %', 'Вердикт'],
+      'Допуск минуса', 'Креатив в гео: ROI %', 'Креатив в гео: продаж', 'Замена', 'Замена: ROI %', 'Вердикт'],
     losers.map(l => [l.id, l.name, l.geo, l.cc, l.creo, r1(l.roi3), r1(l.profit3), r1(l.roi7), l.sales7, r1(l.profit7),
-      r1(l.creoRoi), l.creoSales, l.alt, r1(l.altRoi), l.verdict]),
-    losers.map(l => l.action === 'swap' ? COLORS.rise : COLORS.cut), [60, 300, 50, 60, 140, 70, 80, 70, 70, 80, 90, 90, 140, 90, 520]);
+      -Math.round(l.limit), r1(l.creoRoi), l.creoSales, l.alt, r1(l.altRoi), l.verdict]),
+    losers.map(l => l.action === 'swap' ? COLORS.rise : COLORS.cut), [60, 300, 50, 60, 140, 70, 80, 70, 70, 80, 80, 90, 90, 140, 90, 520]);
   const all = ids.slice().sort((a, b) => profit(m7of(b)) - profit(m7of(a)));
   writeSheet(ss, 'Кампании', head,
     ['ID', 'Кампания', 'Гео', 'Статус КТ', 'Кликов вчера', 'С трафиком', 'Креатив', 'ROI 3д %', 'Продаж 3д', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Расход 7д'],
