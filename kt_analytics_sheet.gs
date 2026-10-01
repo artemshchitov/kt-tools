@@ -347,6 +347,10 @@ function analyse() {
       roi7All: roi(g.all7), profit7All: profit(g.all7), price, priceSrc, limit,
     };
   });
+  // порядок: масштабировать → растёт → держать → просадка → сокращать → мало данных;
+  // внутри группы — по профиту 7д, у «сокращать» худшие сверху
+  const ORDER = { scale: 0, rise: 1, hold: 2, dip: 3, cut: 4, few: 5 };
+  geo.sort((a, b) => (ORDER[a.code] - ORDER[b.code]) || (a.code === 'cut' ? a.profit7 - b.profit7 : b.profit7 - a.profit7));
   const geoCode = {}, geoOff = {};
   geo.forEach(g => { geoCode[g.geo] = g.code; geoOff[g.geo] = g.off; });
 

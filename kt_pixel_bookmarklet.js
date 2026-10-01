@@ -384,8 +384,16 @@
     o.append(el('div', 'm', j.head + ' · посчитано ' + when.toLocaleString()));
     // анализ не сегодняшний — триггер мог не отработать
     if (j.date !== new Date().toLocaleDateString('sv')) o.append(el('div', 'm warn', 'Анализ не за сегодня — нажми «Пересчитать сейчас»'));
-    o.append(el('div', 'an-h', 'Гео'));
-    for (const g of j.geo || []) {
+    // блоки по вердикту: зелёные → держать → сокращать → мало данных
+    const ORDER = { scale: 0, rise: 1, hold: 1, dip: 1, cut: 2, few: 3 };
+    const TITLE = ['🟢 Масштабировать', '⚪ Держать / следить', '🔴 Сокращать', '⚫ Мало данных'];
+    const geos = (j.geo || []).slice().sort((a, b) => (ORDER[a.code] ?? 3) - (ORDER[b.code] ?? 3));
+    let block = -1;
+    for (const g of geos) {
+      if ((ORDER[g.code] ?? 3) !== block) {
+        block = ORDER[g.code] ?? 3;
+        o.append(el('div', 'an-h', TITLE[block]));
+      }
       const b = el('div', 'it g ' + g.code);
       b.append(el('div', '', `${g.geo}  ${g.verdict}`));
       b.append(el('div', 'm', `в КТ ${g.ktActive ?? '?'} · с трафиком ${g.active} · всего ${g.total} · ROI 3д ${fr(g.roi3)} (${g.sales3} прод) · 7д ${fr(g.roi7)} (${g.sales7} прод) · профит 7д ${fm(g.profit7)}` +
