@@ -507,17 +507,71 @@
         b.append(row);
         b.append(el('div', 'm', `${x.status} · на S3 с ${x.modified}` +
           (x.cost ? ` · расход ${Math.round(x.cost)}$, продаж ${x.sales}${x.roi != null ? ', ROI ' + fr(x.roi) : ''}` : '')));
-        if (x.url) {
-          const a = el('a', 'm', 'открыть файл');
-          a.href = x.url;
-          a.target = '_blank';
-          b.append(a);
+        // по кнопке на формат: mp4, mov…
+        for (const f of x.files || []) {
+          const d = el('button', 'an-b sec', '⬇ Скачать ' + f.ext);
+          d.onclick = () => download(f, d);
+          b.append(d);
         }
         o.append(b);
       }
     }
     const all = j.items || [], ready = all.filter(x => x.ready).length, fresh = all.filter(x => x.fresh && x.ready).length;
     $('t-cr').textContent = 'Креативы' + (ready ? ' ✅' + ready : '') + (fresh ? ' 🆕' + fresh : '');
+  }
+  // «Сохранить как» с выбором папки; если бакет не отдаёт файл странице (CORS) или браузер не умеет —
+  // обычное скачивание по подписанной ссылке (место — по настройке Chrome «Всегда указывать место для скачивания»)
+  async function download(f, btn) {
+    const label = btn.textContent;
+    const plain = () => {
+      const a = document.createElement('a');
+      a.href = f.url;
+      a.rel = 'noopener';
+      document.body.append(a);
+      a.click();
+      a.remove();
+      btn.textContent = '✓ скачивается';
+      log(`${f.fname}: обычное скачивание — папку спрашивает Chrome, если включено «Всегда указывать место для скачивания»`);
+    };
+    if (!window.showSaveFilePicker) return plain();
+    let handle;
+    try {
+      handle = await window.showSaveFilePicker({
+        suggestedName: f.fname,
+        types: [{ description: 'Видео', accept: { ['video/' + (f.ext === 'mov' ? 'quicktime' : f.ext)]: ['.' + f.ext] } }],
+      });
+    } catch (e) {
+      if (e.name === 'AbortError') return;   // нажали «Отмена»
+      return plain();
+    }
+    btn.disabled = true;
+    btn.textContent = 'скачиваю…';
+    try {
+      const res = await fetch(f.url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const total = +res.headers.get('content-length') || 0;
+      const w = await handle.createWritable();
+      const reader = res.body.getReader();
+      let got = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        await w.write(value);
+        got += value.length;
+        if (total) btn.textContent = `скачиваю… ${Math.round(got / total * 100)}%`;
+      }
+      await w.close();
+      btn.textContent = '✓ сохранено';
+      log(`${f.fname}: сохранено (${Math.round(got / 1048576)} МБ)`, 'ok');
+    } catch (e) {
+      // чаще всего бакет не разрешает чтение со страницы (CORS) — тогда обычное скачивание
+      log(`${f.fname}: в выбранную папку не вышло (${e.message}) — скачиваю обычным способом`, 'warn');
+      try { await handle.remove(); } catch { /* пустой файл мог остаться */ }
+      plain();
+    } finally {
+      btn.disabled = false;
+      setTimeout(() => (btn.textContent = label), 4000);
+    }
   }
   const loadCr = run => loadSheet('cr', run, 'Креативы', renderCr);
   $('crUrl').value = ls('ktcr_url') || '';

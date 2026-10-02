@@ -215,6 +215,33 @@ function s3List(c) {
   return out;
 }
 
+// подписанная ссылка на скачивание (SigV4, query): файлы в бакете закрыты, прямая ссылка даёт AccessDenied.
+// response-content-disposition — браузер сразу скачивает под именем fname, а не открывает
+function s3PresignRaw(host, region, key, query, amzDate, expires) {
+  const day = amzDate.slice(0, 8), scope = day + '/' + region + '/s3/aws4_request';
+  const q = Object.assign({
+    'X-Amz-Algorithm': 'AWS4-HMAC-SHA256',
+    'X-Amz-Credential': CP.getProperty('S3_ACCESS') + '/' + scope,
+    'X-Amz-Date': amzDate,
+    'X-Amz-Expires': String(expires),
+    'X-Amz-SignedHeaders': 'host',
+  }, query || {});
+  const qs = Object.keys(q).sort().map(k => uriEnc(k) + '=' + uriEnc(q[k])).join('&');
+  const path = '/' + encPath(key);
+  const creq = ['GET', path, qs, 'host:' + host + '\n', 'host', 'UNSIGNED-PAYLOAD'].join('\n');
+  const sts = ['AWS4-HMAC-SHA256', amzDate, scope, sha256hex(creq)].join('\n');
+  let k = hmacB(bytesOf('AWS4' + CP.getProperty('S3_SECRET')), day);
+  for (const part of [region, 's3', 'aws4_request']) k = hmacB(k, part);
+  return 'https://' + host + path + '?' + qs + '&X-Amz-Signature=' + toHex(hmacB(k, sts));
+}
+
+function s3Presign(c, key, fname) {
+  const amzDate = new Date().toISOString().replace(/[-:]|\.\d{3}/g, '');
+  // 7 дней — максимум для SigV4; ссылки пересоздаются при каждой проверке
+  return s3PresignRaw(c.bucket + '.s3.' + c.region + '.amazonaws.com', c.region, key,
+    { 'response-content-disposition': 'attachment; filename="' + fname + '"' }, amzDate, 604800);
+}
+
 // ---------- Кейтаро: расход по креативам за всю историю ----------
 
 function ktSpend(c, today) {
@@ -307,6 +334,14 @@ function creoCheck() {
     x.fresh = !first && !prev[n];
     return x;
   });
+  // подписанные ссылки на скачивание: файл сохраняется под неймингом для залива; mp4 первым
+  list.forEach(x => {
+    x.files.sort((a, b) => /\.mp4$/i.test(b) - /\.mp4$/i.test(a));
+    x.dl = x.files.map(k => {
+      const ext = (k.match(/\.([a-z0-9]+)$/i) || [, 'mp4'])[1].toLowerCase();
+      return { ext: ext, fname: x.name + '.' + ext, url: s3Presign(c, k, x.name + '.' + ext) };
+    });
+  });
   // готовые сверху; дальше по гео и свежести
   list.sort((a, b) => (b.ready - a.ready) || a.geo.localeCompare(b.geo) || (b.modified - a.modified));
 
@@ -314,16 +349,15 @@ function creoCheck() {
   const head = 'Креативы «' + c.name + '» в s3://' + c.bucket + '/' + c.prefix + ' с ' + Utilities.formatDate(since, tz, 'dd.MM.yyyy') +
     ' · проверено ' + fmt(now) + ' · готовы к заливу: ' + list.filter(x => x.ready).length + ' из ' + list.length;
   const cols = ['', 'Гео', 'Нейминг для залива', 'Статус', 'Расход в КТ $', 'Кликов', 'Продаж', 'ROI %',
-    'Загружен на S3', 'Файлы', 'Впервые замечен', 'Ссылка'];
+    'Загружен на S3', 'Файлы', 'Впервые замечен', 'Скачать (ссылка на 7 дней)'];
   sh.clear();
   sh.getRange(1, 1).setValue(head).setFontWeight('bold');
   sh.getRange(2, 1, 1, cols.length).setValues([cols]).setFontWeight('bold').setFontColor('#ffffff').setBackground('#4472c4');
   if (list.length) {
-    const url = k => 'https://' + c.bucket + '.s3.' + c.region + '.amazonaws.com/' + encPath(k);
     sh.getRange(3, 1, list.length, cols.length).setValues(list.map(x => [
       x.fresh ? '🆕' : '', x.geo, x.name, x.status, Math.round(x.cost * 100) / 100, x.clicks, x.sales,
       x.roi == null ? '' : Math.round(x.roi), fmt(x.modified), x.files.map(k => k.split('/').pop()).join('\n'),
-      x.seen, url(x.files[0]),
+      x.seen, x.dl[0].url,
     ])).setVerticalAlignment('top');
     list.forEach((x, i) => sh.getRange(3 + i, 1, 1, cols.length).setBackground(x.ready ? '#c6efce' : '#f2f2f2'));
     sh.getRange(3, 11, list.length, 1).setNumberFormat('dd.MM.yyyy HH:mm');
@@ -331,13 +365,12 @@ function creoCheck() {
   [30, 50, 330, 230, 100, 70, 70, 60, 130, 330, 130, 300].forEach((w, i) => sh.setColumnWidth(i + 1, w));
   sh.setFrozenRows(2);
 
-  const s3url = k => 'https://' + c.bucket + '.s3.' + c.region + '.amazonaws.com/' + encPath(k);
   creoSaveJson({
     generated: now.toISOString(), head: head,
     items: list.map(x => ({
       geo: x.geo, name: x.name, status: x.status, ready: x.ready, fresh: x.fresh,
       cost: x.cost, clicks: x.clicks, sales: x.sales, roi: x.roi,
-      modified: Utilities.formatDate(x.modified, tz, 'dd.MM HH:mm'), url: s3url(x.files[0]),
+      modified: Utilities.formatDate(x.modified, tz, 'dd.MM HH:mm'), files: x.dl,
     })),
   });
   return { total: list.length, ready: list.filter(x => x.ready).length, fresh: list.filter(x => x.fresh).length };
