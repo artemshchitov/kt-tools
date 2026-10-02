@@ -92,6 +92,10 @@ function creoCfg() {
   c.prefix = String(c.prefix).replace(/^\/+/, '').replace(/\/*$/, '/');
   c.exts = String(c.exts).toLowerCase().split(/[\s,;]+/).filter(Boolean);
   c.ktUrl = String(c.ktUrl).replace(/\/+$/, '');
+  // таблица сама превращает «2024-01-01» в дату — Кейтаро нужен текст ГГГГ-ММ-ДД
+  const tz = SpreadsheetApp.getActive().getSpreadsheetTimeZone();
+  c.ktFrom = c.ktFrom instanceof Date ? Utilities.formatDate(c.ktFrom, tz, 'yyyy-MM-dd')
+    : (String(c.ktFrom).match(/\d{4}-\d{2}-\d{2}/) || ['2024-01-01'])[0];
   return c;
 }
 
