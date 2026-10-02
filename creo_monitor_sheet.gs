@@ -150,7 +150,9 @@ function s3List(c) {
       const code = (t.match(/<Code>(.*?)<\/Code>/) || [])[1] || '';
       throw new Error('S3 ' + res.getResponseCode() + ' ' + code +
         (code === 'SignatureDoesNotMatch' || code === 'InvalidAccessKeyId' ? ' — неверные ключи S3' : '') +
-        (code === 'PermanentRedirect' || code === 'AuthorizationHeaderMalformed' ? ' — проверь регион бакета' : ''));
+        (code === 'PermanentRedirect' || code === 'AuthorizationHeaderMalformed' ? ' — проверь регион бакета' : '') +
+        (code === 'AccessDenied' ? ' — ключи верные, но им не разрешён просмотр папки «' + c.prefix +
+          '» (s3:ListBucket). Проверь путь к папке или попроси ключи с доступом к ней' : ''));
     }
     const unxml = s => s.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
     (t.match(/<Contents>[\s\S]*?<\/Contents>/g) || []).forEach(x => {
