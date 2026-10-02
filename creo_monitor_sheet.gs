@@ -26,7 +26,7 @@ const CREO_SETTINGS = [
   ['Форматы видео', 'exts', 'mp4,mov,m4v,webm,avi,mkv'],
   ['КТ адрес', 'ktUrl', 'https://harryhole.info'],
   ['История трафика в КТ с', 'ktFrom', '2024-01-01'],
-  ['Автозапуск: каждые N часов', 'every', 2],
+  ['Автозапуск: каждые N часов', 'every', 1],
 ];
 const SET_SHEET = 'Настройки креативов', OUT_SHEET = 'Креативы';
 
@@ -57,10 +57,19 @@ function creoSetup() {
   const miss = ['S3_ACCESS', 'S3_SECRET', 'KT_KEY'].filter(p => !CP.getProperty(p));
   if (miss.length) return ui.alert('Не заданы: ' + miss.join(', ') + ' — проверка работать не будет');
 
-  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'creoRun').forEach(t => ScriptApp.deleteTrigger(t));
-  const c = creoCfg();
-  ScriptApp.newTrigger('creoRun').timeBased().everyHours(Math.max(1, c.every)).create();
-  ui.alert('Готово. Автопроверка каждые ' + Math.max(1, c.every) + ' ч. Имя, папка и период — на листе «' + SET_SHEET + '».');
+  const h = creoTrigger(creoCfg(), true);
+  ui.alert('Готово. Автопроверка каждые ' + h + ' ч. Имя, папка и период — на листе «' + SET_SHEET + '».');
+}
+
+// триггер автопроверки: ставится сам при любом запуске; меняется, если поменяли «каждые N часов»
+function creoTrigger(c, force) {
+  const h = Math.max(1, Math.round(c.every) || 1);
+  const has = ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'creoRun');
+  if (!force && has.length && CP.getProperty('CREO_EVERY') === String(h)) return h;
+  has.forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('creoRun').timeBased().everyHours(h).create();
+  CP.setProperty('CREO_EVERY', String(h));
+  return h;
 }
 
 function creoMenuRun() {
@@ -207,6 +216,7 @@ function creoRun() {
 function creoCheck() {
   const c = creoCfg(), ss = SpreadsheetApp.getActive(), tz = ss.getSpreadsheetTimeZone();
   if (!c.name) throw new Error('пустое «Имя в нейминге» на листе «' + SET_SHEET + '»');
+  creoTrigger(c, false);
   ['S3_ACCESS', 'S3_SECRET', 'KT_KEY'].forEach(p => { if (!CP.getProperty(p)) throw new Error('нет ' + p + ' — меню «Креативы → Установка»'); });
   const now = new Date(), today = Utilities.formatDate(now, tz, 'yyyy-MM-dd');
   const since = c.since instanceof Date ? c.since
