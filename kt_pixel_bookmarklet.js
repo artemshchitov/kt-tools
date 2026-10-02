@@ -4,6 +4,7 @@
 //   «Домены» — строки и домены поровну, домен N → кампании строки N (домены можно склеенные подряд).
 //   «Дубли» — кампания-образец по ID клонируется по разу на каждую строку; кабинет в названии → нейминг строки.
 //   «Аналитика» — при открытии тянет последний анализ из Google Таблицы (kt_analytics_sheet.gs, веб-приложение).
+//   «Креативы» — при открытии тянет креативы на S3, готовые к заливу (creo_monitor_sheet.gs, веб-приложение).
 // Меняет то же, что kt_set_pixel.py: parameters.sub_id_16/17.placeholder и pixel=/token= в notes.
 // Сборка ссылки: python build_bookmarklet.py
 (() => {
@@ -46,12 +47,14 @@
   .an-h{font-weight:600;margin:10px 0 6px}
   .an-b{padding:2px 8px;font-size:11px;margin:4px 0 0}
   details summary{cursor:pointer;color:#666;margin:6px 0}
+  label.inl{display:inline-flex;gap:4px;align-items:center;font-weight:400;margin:0 0 0 6px}label.inl input{width:auto}
+  .cr{display:flex;gap:6px;align-items:center;justify-content:space-between}.cr code{font:12px Consolas,monospace;word-break:break-all}
 </style>
 <div class="w">
   <h3>Кейтаро: замена pixel / token / домена <b id="x">✕</b></h3>
   <label>API-ключ Кейтаро <small>— Настройки → API; запоминается в этом браузере</small></label>
   <input id="key" type="password" autocomplete="off">
-  <div class="tabs"><a id="t-px" data-mode="px">Pixel / Token</a><a id="t-dom" data-mode="dom">Домены</a><a id="t-dup" data-mode="dup">Дубли</a><a id="t-an" data-mode="an">Аналитика</a></div>
+  <div class="tabs"><a id="t-px" data-mode="px">Pixel / Token</a><a id="t-dom" data-mode="dom">Домены</a><a id="t-dup" data-mode="dup">Дубли</a><a id="t-an" data-mode="an">Аналитика</a><a id="t-cr" data-mode="cr">Креативы</a></div>
   <div class="pane" id="p-px">
     <label>Pixel <small>— один на все строки ниже; пусто — не меняем</small></label>
     <input id="pixel" type="text" autocomplete="off" placeholder="1067868436152332">
@@ -88,6 +91,17 @@
       <input id="anTok" type="password" autocomplete="off">
     </details>
   </div>
+  <div class="pane" id="p-cr">
+    <div class="act"><button id="crLoad" class="sec">Обновить из таблицы</button><button id="crRun">Проверить S3 сейчас</button>
+      <label class="inl"><input type="checkbox" id="crReady" checked> только готовые к заливу</label></div>
+    <div id="crOut"></div>
+    <details id="crCfg"><summary>подключение к таблице креативов</summary>
+      <label>Ссылка веб-приложения <small>— меню таблицы «Креативы → Ссылка для букмарклета»</small></label>
+      <input id="crUrl" type="text" autocomplete="off" placeholder="https://script.google.com/macros/s/.../exec">
+      <label>Ключ букмарклета <small>— там же</small></label>
+      <input id="crTok" type="password" autocomplete="off">
+    </details>
+  </div>
   <div class="act" id="mainAct"><button id="check">Проверить</button><button id="apply" disabled>Применить</button></div>
   <div id="out"></div>
   <div id="log"></div>
@@ -102,12 +116,12 @@
   function setMode(m) {
     mode = m;
     ls('ktpx_tab', m);
-    for (const t of ['px', 'dom', 'dup', 'an']) {
+    for (const t of ['px', 'dom', 'dup', 'an', 'cr']) {
       $('t-' + t).classList.toggle('on', t === m);
       $('p-' + t).classList.toggle('on', t === m);
     }
     // у аналитики свои кнопки; «Проверить/Применить» там не нужны
-    $('mainAct').style.display = m === 'an' ? 'none' : '';
+    $('mainAct').style.display = m === 'an' || m === 'cr' ? 'none' : '';
     // план от другой вкладки применять нельзя
     plan = [];
     $('out').innerHTML = '';
@@ -422,53 +436,98 @@
     $('t-an').textContent = 'Аналитика' + (n('scale') ? ' 🟢' + n('scale') : '') + (n('cut') ? ' 🔴' + n('cut') : '');
   }
 
-  async function loadAn(run) {
-    const u = $('anUrl').value.trim(), t = $('anTok').value.trim();
+  // данные из Google Таблицы (веб-приложение Apps Script): p — префикс id полей вкладки (an / cr)
+  async function loadSheet(p, run, menu, render) {
+    const out = $(p + 'Out'), u = $(p + 'Url').value.trim(), t = $(p + 'Tok').value.trim();
+    const msg = (cls, text) => { out.innerHTML = ''; out.append(el('div', 'm ' + cls, text)); };
     if (!u || !t) {
-      $('anOut').innerHTML = '';
-      $('anOut').append(el('div', 'm warn', 'Впиши ссылку и ключ из меню таблицы «KT аналитика → Ссылка для букмарклета»'));
-      $('anCfg').open = true;
+      msg('warn', `Впиши ссылку и ключ из меню таблицы «${menu} → Ссылка для букмарклета»`);
+      $(p + 'Cfg').open = true;
       return;
     }
     if (!/^https:\/\/script\.google\.com\/.+\/exec$/.test(u)) {
-      $('anOut').innerHTML = '';
-      $('anOut').append(el('div', 'm err', /\/dev$/.test(u)
+      msg('err', /\/dev$/.test(u)
         ? 'Это тестовая ссылка /dev — она пускает только редакторов скрипта. Нужна /exec: Apps Script → Развернуть → Управление развёртываниями → Веб-приложение → URL'
-        : 'Ссылка должна быть вида https://script.google.com/macros/s/…/exec'));
-      $('anCfg').open = true;
+        : 'Ссылка должна быть вида https://script.google.com/macros/s/…/exec');
+      $(p + 'Cfg').open = true;
       return;
     }
-    ls('ktan_url', u);
-    ls('ktan_tok', t);
-    $('anLoad').disabled = $('anRun').disabled = true;
-    $('anOut').innerHTML = '';
-    $('anOut').append(el('div', 'm', run ? 'пересчитываю в таблице… (до пары минут)' : 'загружаю из таблицы…'));
+    ls('kt' + p + '_url', u);
+    ls('kt' + p + '_tok', t);
+    $(p + 'Load').disabled = $(p + 'Run').disabled = true;
+    msg('', run ? 'пересчитываю в таблице… (до пары минут)' : 'загружаю из таблицы…');
     try {
       const res = await fetch(u + (u.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(t) + (run ? '&run=1' : ''));
       const j = await res.json();
       if (j.error) throw new Error(j.error);
-      renderAn(j);
+      render(j);
     } catch (e) {
-      $('anOut').innerHTML = '';
-      $('anOut').append(el('div', 'm err', 'Не загрузилось: ' + e.message));
+      msg('err', 'Не загрузилось: ' + e.message);
       if (e instanceof TypeError) {
-        // различаем: Google отдал не JSON (доступ не «Все») или запрос вообще не ушёл (политика сайта/сеть)
+        // различаем: Google отдал не JSON (развёртывание) или запрос вообще не ушёл (политика сайта/сеть)
         let reached = false;
         try { await fetch(u, { mode: 'no-cors' }); reached = true; } catch { /* не ушёл */ }
-        $('anOut').append(el('div', 'm warn', reached
-          ? 'Google отвечает, но не отдаёт данные этому сайту: развёртывание закрыто. Apps Script → Развернуть → Управление развёртываниями → ✎ → «У кого есть доступ: Все» (не «все с аккаунтом Google») → Развернуть. Ссылка /exec останется той же.'
+        out.append(el('div', 'm warn', reached
+          ? 'Google отвечает, но данные не отдаёт: проверь развёртывание (доступ «Все», запуск от имени «Я», версия — новая) и открой ссылку+?t=ключ в окне инкогнито.'
           : 'Запрос до Google не дошёл: админка Кейтаро запрещает внешние запросы или их режет расширение/сеть. Открой ссылку+?t=ключ в новой вкладке — если там JSON, напиши мне.'));
       }
     } finally {
-      $('anLoad').disabled = $('anRun').disabled = false;
+      $(p + 'Load').disabled = $(p + 'Run').disabled = false;
     }
   }
+  const loadAn = run => loadSheet('an', run, 'KT аналитика', renderAn);
   $('anUrl').value = ls('ktan_url') || '';
   $('anTok').value = ls('ktan_tok') || '';
   $('anLoad').onclick = () => loadAn(false);
   $('anRun').onclick = () => loadAn(true);
 
-  setMode(['dom', 'dup', 'an'].includes(ls('ktpx_tab')) ? ls('ktpx_tab') : 'px');
-  // при открытии сразу тянем аналитику — итог виден на ярлыке вкладки
+  // ---------- креативы на S3, готовые к заливу ----------
+
+  let crData = null;
+  function renderCr(j) {
+    crData = j;
+    const o = $('crOut');
+    o.innerHTML = '';
+    o.append(el('div', 'm', j.head));
+    const only = $('crReady').checked;
+    const items = (j.items || []).filter(x => !only || x.ready);
+    if (!items.length) o.append(el('div', 'm', only ? 'готовых к заливу нет' : 'креативов нет'));
+    const byGeo = new Map();
+    items.forEach(x => byGeo.set(x.geo, [...(byGeo.get(x.geo) || []), x]));
+    for (const [geo, list] of [...byGeo].sort((a, b) => a[0].localeCompare(b[0]))) {
+      o.append(el('div', 'an-h', `${geo} · готовых ${list.filter(x => x.ready).length}${only ? '' : ' из ' + list.length}`));
+      for (const x of list) {
+        const b = el('div', 'it g ' + (x.ready ? 'scale' : 'few'));
+        const row = el('div', 'cr');
+        row.append(el('code', '', (x.fresh ? '🆕 ' : '') + x.name));
+        // нейминг для залива — в буфер одной кнопкой
+        const cp = el('button', 'an-b', 'Копировать');
+        cp.onclick = async () => { await navigator.clipboard.writeText(x.name); cp.textContent = '✓'; setTimeout(() => (cp.textContent = 'Копировать'), 1200); };
+        row.append(cp);
+        b.append(row);
+        b.append(el('div', 'm', `${x.status} · на S3 с ${x.modified}` +
+          (x.cost ? ` · расход ${Math.round(x.cost)}$, продаж ${x.sales}${x.roi != null ? ', ROI ' + fr(x.roi) : ''}` : '')));
+        if (x.url) {
+          const a = el('a', 'm', 'открыть файл');
+          a.href = x.url;
+          a.target = '_blank';
+          b.append(a);
+        }
+        o.append(b);
+      }
+    }
+    const all = j.items || [], ready = all.filter(x => x.ready).length, fresh = all.filter(x => x.fresh && x.ready).length;
+    $('t-cr').textContent = 'Креативы' + (ready ? ' ✅' + ready : '') + (fresh ? ' 🆕' + fresh : '');
+  }
+  const loadCr = run => loadSheet('cr', run, 'Креативы', renderCr);
+  $('crUrl').value = ls('ktcr_url') || '';
+  $('crTok').value = ls('ktcr_tok') || '';
+  $('crLoad').onclick = () => loadCr(false);
+  $('crRun').onclick = () => loadCr(true);
+  $('crReady').onchange = () => { if (crData) renderCr(crData); };
+
+  setMode(['dom', 'dup', 'an', 'cr'].includes(ls('ktpx_tab')) ? ls('ktpx_tab') : 'px');
+  // при открытии сразу тянем аналитику и креативы — итог виден на ярлыках вкладок
   if ($('anUrl').value && $('anTok').value) loadAn(false);
+  if ($('crUrl').value && $('crTok').value) loadCr(false);
 })();

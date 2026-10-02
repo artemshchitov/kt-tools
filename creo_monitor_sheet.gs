@@ -9,6 +9,8 @@
  *   3. По Кейтаро (sub_id_3, все группы, вся история) смотрит, был ли по креативу расход.
  *      Нет расхода -> «✅ готов к заливу», есть -> «🚀 уже льётся» с расходом/ROI.
  *   4. Лист «Креативы»: готовые сверху, по гео; «🆕» — появился с прошлого запуска.
+ *   5. Вкладка «Креативы» букмарклета kt-tools: Развернуть → Новое развёртывание → Веб-приложение
+ *      (запуск от имени: я, доступ: все) → меню «Креативы → Ссылка для букмарклета».
  *
  * Установка: Расширения → Apps Script → вставить код → сохранить → обновить таблицу →
  *   меню «Креативы → Установка» (ключи S3 и Кейтаро, автозапуск) → «Креативы → Проверить сейчас».
@@ -36,7 +38,49 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('Креативы')
     .addItem('Проверить сейчас', 'creoMenuRun')
     .addItem('Установка / ключи', 'creoSetup')
+    .addItem('Ссылка для букмарклета', 'creoShowLink')
     .addToUi();
+}
+
+function creoShowLink() {
+  if (!CP.getProperty('CREO_WEB_TOKEN')) CP.setProperty('CREO_WEB_TOKEN', Utilities.getUuid().replace(/-/g, ''));
+  const url = ScriptApp.getService().getUrl();
+  // getUrl() в новом редакторе часто отдаёт тестовую /dev — она пускает только редакторов, букмарклету не подходит
+  const link = url && /\/exec$/.test(url) ? url
+    : '(возьми ссылку, заканчивающуюся на /exec: Развернуть → Управление развёртываниями → Веб-приложение → URL)';
+  SpreadsheetApp.getUi().alert(url
+    ? 'Впиши во вкладку «Креативы» букмарклета:\n\nСсылка:\n' + link + '\n\nКлюч:\n' + CP.getProperty('CREO_WEB_TOKEN') +
+      '\n\nКлюч не публикуй.'
+    : 'Сначала: Развернуть → Новое развёртывание → Веб-приложение (запуск от имени: я, доступ: все).');
+}
+
+// ---------- веб-приложение для букмарклета ----------
+
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+  const out = o => ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON);
+  if (!p.t || p.t !== CP.getProperty('CREO_WEB_TOKEN')) return out({ error: 'неверный ключ букмарклета' });
+  if (p.run === '1') {
+    try { creoRun(); } catch (err) { return out({ error: String(err.message || err) }); }
+  }
+  return out(creoReadJson() || { error: 'проверка ещё не запускалась — меню «Креативы → Проверить сейчас»' });
+}
+
+// JSON последней проверки — в скрытом листе кусками (лимит ячейки 50к символов)
+function creoSaveJson(o) {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName('_creo_json');
+  if (!sh) { sh = ss.insertSheet('_creo_json'); sh.hideSheet(); }
+  const s = JSON.stringify(o), parts = [];
+  for (let i = 0; i < s.length; i += 45000) parts.push([s.slice(i, i + 45000)]);
+  sh.clear();
+  sh.getRange(1, 1, parts.length, 1).setValues(parts);
+}
+
+function creoReadJson() {
+  const sh = SpreadsheetApp.getActive().getSheetByName('_creo_json');
+  if (!sh || !sh.getLastRow()) return null;
+  return JSON.parse(sh.getRange(1, 1, sh.getLastRow(), 1).getValues().map(r => r[0]).join(''));
 }
 
 function creoSetup() {
@@ -286,5 +330,15 @@ function creoCheck() {
   }
   [30, 50, 330, 230, 100, 70, 70, 60, 130, 330, 130, 300].forEach((w, i) => sh.setColumnWidth(i + 1, w));
   sh.setFrozenRows(2);
+
+  const s3url = k => 'https://' + c.bucket + '.s3.' + c.region + '.amazonaws.com/' + encPath(k);
+  creoSaveJson({
+    generated: now.toISOString(), head: head,
+    items: list.map(x => ({
+      geo: x.geo, name: x.name, status: x.status, ready: x.ready, fresh: x.fresh,
+      cost: x.cost, clicks: x.clicks, sales: x.sales, roi: x.roi,
+      modified: Utilities.formatDate(x.modified, tz, 'dd.MM HH:mm'), url: s3url(x.files[0]),
+    })),
+  });
   return { total: list.length, ready: list.filter(x => x.ready).length, fresh: list.filter(x => x.fresh).length };
 }
