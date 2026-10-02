@@ -26,6 +26,7 @@ const CREO_SETTINGS = [
   ['Регион S3', 'region', 'eu-west-3'],
   ['Период: загружены с (пусто — с начала месяца)', 'since', ''],
   ['Форматы видео', 'exts', 'mp4,mov,m4v,webm,avi,mkv'],
+  ['Гео-коды в нейминге (код=гео через запятую; 2 буквы — как есть)', 'geoCodes', 'uses=US(ES), bech=CH, chde=CH(DE), chfr=CH(FR)'],
   ['КТ адрес', 'ktUrl', 'https://harryhole.info'],
   ['История трафика в КТ с', 'ktFrom', '2024-01-01'],
   ['Автозапуск: каждые N часов', 'every', 1],
@@ -136,6 +137,12 @@ function creoCfg() {
   c.prefix = String(c.prefix).replace(/^\/+/, '').replace(/\/*$/, '/');
   c.exts = String(c.exts).toLowerCase().split(/[\s,;]+/).filter(Boolean);
   c.ktUrl = String(c.ktUrl).replace(/\/+$/, '');
+  // «uses=US(ES), chfr=CH(FR)» -> { uses: 'US(ES)', chfr: 'CH(FR)' }
+  c.geoMap = {};
+  String(c.geoCodes || '').split(/[,;\n]+/).forEach(t => {
+    const m = t.trim().match(/^([a-z0-9]+)\s*=\s*(\S+)$/i);
+    if (m) c.geoMap[m[1].toLowerCase()] = m[2].toUpperCase();
+  });
   // таблица сама превращает «2024-01-01» в дату — Кейтаро нужен текст ГГГГ-ММ-ДД
   const tz = SpreadsheetApp.getActive().getSpreadsheetTimeZone();
   c.ktFrom = c.ktFrom instanceof Date ? Utilities.formatDate(c.ktFrom, tz, 'yyyy-MM-dd')
@@ -153,7 +160,12 @@ function creoNorm(s) {
     .replace(/_(\d{1,2})_(\d{1,2})_(\d{2}|\d{4})$/, '_$1_$2');
 }
 
-const creoGeo = n => { const m = n.match(/^([a-z]{2})_/); return m ? m[1].toUpperCase() : '??'; };
+// гео — первый кусок нейминга: сначала по таблице кодов (uses -> US(ES), chfr -> CH(FR)), иначе две буквы как есть
+const creoGeo = (n, map) => {
+  const t = (n.match(/^([a-z0-9]+)_/) || [])[1] || '';
+  if (map && map[t]) return map[t];
+  return /^[a-z]{2}$/.test(t) ? t.toUpperCase() : '??';
+};
 
 // имя креативщика/баера в нейминге — отдельным куском: «artem» не зацепит «artemis»
 const hasName = (n, name) => new RegExp('(^|[^a-z0-9])' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '([^a-z0-9]|$)').test(n);
@@ -307,7 +319,7 @@ function creoCheck() {
     if (!ext || !c.exts.includes(ext.toLowerCase()) || o.modified < since) return;
     const n = creoNorm(file);
     if (!hasName(n, c.name)) return;
-    const x = creos[n] = creos[n] || { name: n, geo: creoGeo(n), files: [], modified: o.modified };
+    const x = creos[n] = creos[n] || { name: n, geo: creoGeo(n, c.geoMap), files: [], modified: o.modified };
     x.files.push(o.key);
     if (o.modified < x.modified) x.modified = o.modified;
   });
