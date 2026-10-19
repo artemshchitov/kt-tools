@@ -410,6 +410,15 @@
       if (p.offCount) b.append(el('div', 'm', `к отключению ${p.offCount} камп. (у них за 7д: спенд ${Math.round(p.offCost7)}$, профит ${fm(p.offProfit7)}) · ROI портфеля ${fr(p.roiNow)} → ${fr(p.roiAfterOff)} после отключения`));
       o.append(b);
     }
+    if (j.topGeos3 && (j.topGeos3.rows || []).length) {
+      o.append(el('div', 'an-h', `🌍 Топ гео по всем группам (${j.topGeos3.from}–${j.topGeos3.to}, с сегодняшним днём)`));
+      for (const g of j.topGeos3.rows) {
+        const b = el('div', 'it g ' + (g.profit >= 0 ? 'scale' : 'cut'));
+        b.append(el('div', '', `${g.geo} — профит ${fm(g.profit)}, ROI ${fr(g.roi)}`));
+        b.append(el('div', 'm', `продаж ${g.sales} · доход ${Math.round(g.revenue)}$ − расход ${Math.round(g.cost)}$ · кликов ${g.clicks}`));
+        o.append(b);
+      }
+    }
     if ((j.topCreos || []).length) {
       o.append(el('div', 'an-h', '🏆 Топ крео по всем гео (7д)'));
       for (const t of j.topCreos) {

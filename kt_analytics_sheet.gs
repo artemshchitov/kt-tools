@@ -443,6 +443,19 @@ function analyse() {
       return { name: k, profit7: profit(t.m), roi7: roi(t.m), sales7: t.m.sales, geos: t.geos.slice(0, 4) };
     });
 
+  // топ гео за 3 дня + сегодня по ВСЕМ группам кампаний (гео из названия, язык-гео вида CH(FR) сохраняется)
+  const geoAll = {};
+  report(c, d3, today, ['campaign_id']).forEach(r => {
+    const g = geoOf(nameAll[num(r.campaign_id)]);
+    add(geoAll[g] = geoAll[g] || M(), r);
+  });
+  const topGeos3 = {
+    from: dm(d3), to: dm(today),
+    rows: Object.keys(geoAll).filter(k => geoAll[k].clicks > 0)
+      .sort((a, b) => profit(geoAll[b]) - profit(geoAll[a])).slice(0, 15)
+      .map(k => ({ geo: k, clicks: geoAll[k].clicks, sales: geoAll[k].sales, revenue: geoAll[k].revenue, cost: geoAll[k].cost, profit: profit(geoAll[k]), roi: roi(geoAll[k]) })),
+  };
+
   const plan = {
     cabs: cabSet.size, base: c.baseCabs, liveCamps: liveIds.length, perCab, capCabs,
     profit7: profit(liveM), cost7: liveM.cost, roiNow: roi(liveM),
@@ -453,7 +466,7 @@ function analyse() {
 
   const head = 'Кейтаро · группа ' + c.group + ' · ' + dm(today) + '  (3д: ' + dm(d3) + '–' + dm(y) + ' · 7д: ' + dm(d7) + '–' + dm(y) +
     ' · с трафиком: ≥' + c.minClicks + ' кликов за вчера-сегодня)';
-  const result = { generated: new Date().toISOString(), date: today, head, geo, losers, plan, topCreos };
+  const result = { generated: new Date().toISOString(), date: today, head, geo, losers, plan, topCreos, topGeos3 };
 
   // ---- 3. листы ----
   writeSheet(ss, 'Гео', head,
@@ -480,6 +493,10 @@ function analyse() {
     ['У отключаемых за 7д', 'спенд ' + Math.round(plan.offCost7) + '$, профит ' + fm(plan.offProfit7)],
     ['ROI портфеля после отключения', fr(plan.roiNow) + ' → ' + fr(plan.roiAfterOff)],
   ], null, [300, 640]);
+  writeSheet(ss, 'Топ гео 3д+сегодня', 'Все группы кампаний · ' + topGeos3.from + '–' + topGeos3.to + ' (сегодня включено, продажи подтверждённые)',
+    ['Гео', 'Кликов', 'Продаж', 'Доход (подтв.)', 'Расход', 'Профит', 'ROI %'],
+    topGeos3.rows.map(g => [g.geo, g.clicks, g.sales, r1(g.revenue), r1(g.cost), r1(g.profit), r1(g.roi)]),
+    null, [70, 70, 70, 100, 80, 80, 70]);
   writeSheet(ss, 'Топ крео', head,
     ['Креатив', 'Профит 7д', 'ROI 7д %', 'Продаж 7д', 'Лучшие гео'],
     topCreos.map(t => [t.name, r1(t.profit7), r1(t.roi7), t.sales7,
