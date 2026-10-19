@@ -398,6 +398,27 @@
     o.append(el('div', 'm', j.head + ' · посчитано ' + when.toLocaleString()));
     // анализ не сегодняшний — триггер мог не отработать
     if (j.date !== new Date().toLocaleDateString('sv')) o.append(el('div', 'm warn', 'Анализ не за сегодня — нажми «Пересчитать сейчас»'));
+    // сводка масштабирования: ёмкость, риск-бюджет, отключаемые и ROI после
+    if (j.plan) {
+      const p = j.plan;
+      o.append(el('div', 'an-h', '📈 Масштаб сейчас'));
+      const b = el('div', 'it g ' + (p.addTotal ? 'scale' : 'hold'));
+      b.append(el('div', '', `добавить сейчас: ${p.addTotal} кампани(й)` +
+        ((p.alloc || []).length ? ' — ' + p.alloc.map(a => `${a.geo} +${a.n}${a.creo ? ' «' + a.creo + '»' : ''}`).join(', ') : '')));
+      b.append(el('div', 'm', `кабинетов с трафиком вчера-сегодня ${p.cabs} (база ${p.base}) · кампаний с трафиком ${p.liveCamps} (~${p.perCab}/каб, ёмкость до базы +${p.capCabs})`));
+      b.append(el('div', 'm', `профит 7д ${fm(p.profit7)} (ROI ${fr(p.roiNow)}) · риск-бюджет ${p.riskBudget}$ (${p.riskPct}% профита) · худший случай всех тестов −${p.worstCase}$`));
+      if (p.offCount) b.append(el('div', 'm', `к отключению ${p.offCount} камп. (у них за 7д: спенд ${Math.round(p.offCost7)}$, профит ${fm(p.offProfit7)}) · ROI портфеля ${fr(p.roiNow)} → ${fr(p.roiAfterOff)} после отключения`));
+      o.append(b);
+    }
+    if ((j.topCreos || []).length) {
+      o.append(el('div', 'an-h', '🏆 Топ крео по всем гео (7д)'));
+      for (const t of j.topCreos) {
+        const b = el('div', 'it');
+        b.append(el('div', '', `«${t.name}» — профит ${fm(t.profit7)}, ROI ${fr(t.roi7)}, продаж ${t.sales7}`));
+        b.append(el('div', 'm', (t.geos || []).map(x => `${x.geo} ${fm(x.profit)} (${fr(x.roi)})`).join(' · ')));
+        o.append(b);
+      }
+    }
     // блоки по вердикту: зелёные → держать → сокращать → мало данных
     const ORDER = { scale: 0, rise: 1, hold: 1, dip: 1, cut: 2, few: 3 };
     const TITLE = ['🟢 Масштабировать', '⚪ Держать / следить', '🔴 Сокращать', '⚫ Мало данных'];

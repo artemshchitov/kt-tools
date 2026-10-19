@@ -32,6 +32,8 @@ const SETTINGS = [
   ['Креатив рабочий: ROI от, %', 'creoOkRoi', 20],
   ['Минусовых кампаний в разборе', 'losersTop', 10],
   ['Час автозапуска', 'hour', 9],
+  ['База активных кабинетов (ёмкость масштаба)', 'baseCabs', 3],
+  ['Риск: % профита 7д на тесты новых кампаний', 'riskPct', 30],
 ];
 const COLORS = { scale: '#c6efce', cut: '#ffc7ce', rise: '#ffeb9c', dip: '#ffeb9c' };
 const UK_CC = { UK: 'GB' };
@@ -54,6 +56,11 @@ function setup() {
     st = ss.insertSheet('Настройки');
     st.getRange(1, 1, SETTINGS.length, 2).setValues(SETTINGS.map(s => [s[0], s[2]]));
     st.setColumnWidth(1, 260);
+  } else {
+    // дописать появившиеся настройки в существующий лист
+    const have = new Set(st.getDataRange().getValues().map(r => String(r[0])));
+    const missing = SETTINGS.filter(s => !have.has(s[0]));
+    if (missing.length) st.getRange(st.getLastRow() + 1, 1, missing.length, 2).setValues(missing.map(s => [s[0], s[2]]));
   }
   for (const n of ['Гео', 'Минусовые', 'Кампании', 'История']) if (!ss.getSheetByName(n)) ss.insertSheet(n);
   if (!ss.getSheetByName('_json')) ss.insertSheet('_json').hideSheet();
@@ -241,9 +248,9 @@ function analyse() {
     report(c, from, to, ['campaign_id'], ids).forEach(r => { const id = num(r.campaign_id); add(o[id] = o[id] || M(), r); });
     return o;
   };
-  const s3 = perCamp(d3, y), s7 = perCamp(d7, y), lv = perCamp(y, y);
+  const s3 = perCamp(d3, y), s7 = perCamp(d7, y), lv = perCamp(y, today);
   const clicksY = id => (lv[id] || M()).clicks;
-  // активна в КТ — по статусу; с трафиком — активна и вчера набрала порог кликов
+  // активна в КТ — по статусу; с трафиком — активна и за вчера-сегодня набрала порог кликов
   const ktOn = new Set(camps.filter(x => x.state === 'active').map(x => x.id));
   const live = new Set(ids.filter(id => ktOn.has(id) && clicksY(id) >= c.minClicks));
   const m3of = id => s3[id] || M(), m7of = id => s7[id] || M();
@@ -298,12 +305,13 @@ function analyse() {
     const g = geos[name], active = g.camps.filter(id => live.has(id)), ktActive = g.camps.filter(id => ktOn.has(id)).length;
     const [price, priceSrc] = priceOf(name), limit = limitOf(name);
     const [code, verdict] = active.length ? geoVerdict(c, g.m3, g.m7) : ['few', '⚫ нет кампаний с трафиком'];
-    let action = '', template = null, creo = null, off = [];
+    let action = '', template = null, creo = null, off = [], addN = 0;
     if (code === 'scale') {
       const good = active.filter(id => m7of(id).sales >= c.minSales && roi(m7of(id)) > 0);
       const best = good.sort((a, b) => roi(m7of(b)) - roi(m7of(a)))[0];
       // добавляем осторожно: +1, +2 только при очень сильном гео с запасом кампаний
       const n = Math.min(c.scaleMax, roi(g.m7) >= 50 && active.length >= 3 ? 2 : 1);
+      addN = n;
       action = '+' + n + (n === 1 ? ' кампания' : ' кампании');
       if (best) {
         template = { id: best, name: byid[best].name, roi7: roi(m7of(best)), creo: top(campCreo[best]) };
@@ -335,13 +343,13 @@ function analyse() {
         parts.push('кампаний в минусе глубже −' + Math.round(limit) + '$ нет — никого не выключаем');
       }
       if (watch.length) parts.push('в пределах допуска, следить: ' + watch.map(campTxt).join(', '));
-      // включены в КТ, но трафика нет — в минусовом гео их держать незачем
+      // включены в КТ, но трафика вчера-сегодня нет — не трогаем (ни выключать, ни перезаливать), только справка
       const idle = g.camps.filter(id => ktOn.has(id) && !live.has(id));
-      if (idle.length) parts.push('включены в КТ без трафика (<' + c.minClicks + ' кликов вчера): ' + idle.join(', ') + ' — выключить');
+      if (idle.length) parts.push('включены в КТ без трафика вчера-сегодня (<' + c.minClicks + ' кликов): ' + idle.join(', ') + ' — не трогаем, пока нет трафика');
       action = parts.join('; ');
     }
     return {
-      geo: name, active: active.length, ktActive, total: g.camps.length, code, verdict, action, template, creo, off,
+      geo: name, active: active.length, ktActive, total: g.camps.length, code, verdict, action, template, creo, off, addN,
       roi3: roi(g.m3), sales3: g.m3.sales, profit3: profit(g.m3),
       roi7: roi(g.m7), sales7: g.m7.sales, profit7: profit(g.m7), cost7: g.m7.cost, revenue7: g.m7.revenue, hold7: g.m7.hold,
       roi7All: roi(g.all7), profit7All: profit(g.all7), price, priceSrc, limit,
@@ -391,9 +399,61 @@ function analyse() {
       };
     });
 
+  // ---- 3. масштаб: сколько кампаний добавить сейчас и какой ценой ----
+  // кабинет — цифры в скобках в названии кампании; активный = есть кампания с трафиком вчера-сегодня
+  const liveIds = [...live];
+  const cabOf = n => { const m = (n || '').match(/\((\d{6,})\)/); return m ? m[1] : ''; };
+  const cabSet = new Set(liveIds.map(id => cabOf(byid[id].name)).filter(Boolean));
+  const liveM = M();
+  liveIds.forEach(id => add(liveM, m7of(id)));
+  const perCab = cabSet.size ? Math.ceil(liveIds.length / cabSet.size) : 1;
+  // ёмкость по кабинетам: база × текущая нагрузка на кабинет минус уже живые кампании
+  const capCabs = Math.max(0, c.baseCabs * perCab - liveIds.length);
+  // риск-бюджет: сколько готовы потерять, если ни одна новая не сконвертит; цена теста гео = его допуск минуса
+  const riskBudget = Math.max(0, profit(liveM)) * c.riskPct / 100;
+  let budget = riskBudget, slots = capCabs;
+  const alloc = [];
+  geo.filter(g => g.code === 'scale' && g.addN).forEach(g => {
+    let take = 0;
+    for (let i = 0; i < g.addN; i++) if (slots > 0 && budget >= g.limit) { take++; slots--; budget -= g.limit; }
+    if (take) alloc.push({ geo: g.geo, n: take, limit: Math.round(g.limit), creo: g.creo ? g.creo.name : (g.template ? g.template.creo : '') });
+  });
+  const worst = alloc.reduce((s, a) => s + a.n * a.limit, 0);
+
+  // отключаемые этим прогоном (гео-сокращения + минусовые с вердиктом «выключить») и ROI портфеля после
+  const offSet = new Set();
+  geo.forEach(g => (g.off || []).forEach(id => offSet.add(id)));
+  losers.forEach(l => { if (l.action === 'off' && l.verdict.indexOf('⏳') !== 0) offSet.add(l.id); });
+  const offM = M();
+  offSet.forEach(id => add(offM, m7of(id)));
+  const roiAfterOff = (liveM.cost - offM.cost) > 0 ? (profit(liveM) - profit(offM)) / (liveM.cost - offM.cost) * 100 : null;
+
+  // топ креативов по всем доступным гео (7д, пулы по стране клика)
+  const creoTot = {};
+  Object.keys(creoGeo).forEach(gk => Object.keys(creoGeo[gk]).forEach(k => {
+    const t = creoTot[k] = creoTot[k] || { m: M(), geos: [] };
+    add(t.m, creoGeo[gk][k]);
+    t.geos.push({ geo: gk, profit: profit(creoGeo[gk][k]), roi: roi(creoGeo[gk][k]), sales: creoGeo[gk][k].sales });
+  }));
+  const topCreos = Object.keys(creoTot).filter(k => creoTot[k].m.sales >= c.minSales)
+    .sort((a, b) => profit(creoTot[b].m) - profit(creoTot[a].m)).slice(0, 10)
+    .map(k => {
+      const t = creoTot[k];
+      t.geos.sort((a, b) => b.profit - a.profit);
+      return { name: k, profit7: profit(t.m), roi7: roi(t.m), sales7: t.m.sales, geos: t.geos.slice(0, 4) };
+    });
+
+  const plan = {
+    cabs: cabSet.size, base: c.baseCabs, liveCamps: liveIds.length, perCab, capCabs,
+    profit7: profit(liveM), cost7: liveM.cost, roiNow: roi(liveM),
+    riskPct: c.riskPct, riskBudget: Math.round(riskBudget),
+    addTotal: alloc.reduce((s, a) => s + a.n, 0), alloc, worstCase: Math.round(worst),
+    offCount: offSet.size, offCost7: offM.cost, offProfit7: profit(offM), roiAfterOff,
+  };
+
   const head = 'Кейтаро · группа ' + c.group + ' · ' + dm(today) + '  (3д: ' + dm(d3) + '–' + dm(y) + ' · 7д: ' + dm(d7) + '–' + dm(y) +
-    ' · с трафиком: ≥' + c.minClicks + ' кликов за ' + dm(y) + ')';
-  const result = { generated: new Date().toISOString(), date: today, head, geo, losers };
+    ' · с трафиком: ≥' + c.minClicks + ' кликов за вчера-сегодня)';
+  const result = { generated: new Date().toISOString(), date: today, head, geo, losers, plan, topCreos };
 
   // ---- 3. листы ----
   writeSheet(ss, 'Гео', head,
@@ -408,9 +468,26 @@ function analyse() {
     losers.map(l => [l.id, l.name, l.geo, l.cc, l.creo, r1(l.roi3), r1(l.profit3), r1(l.roi7), l.sales7, r1(l.profit7),
       -Math.round(l.limit), r1(l.creoRoi), l.creoSales, l.alt, r1(l.altRoi), l.verdict]),
     losers.map(l => l.action === 'swap' ? COLORS.rise : COLORS.cut), [60, 300, 50, 60, 140, 70, 80, 70, 70, 80, 80, 90, 90, 140, 90, 520]);
+  writeSheet(ss, 'Масштаб', head, ['Параметр', 'Значение'], [
+    ['Кабинетов с трафиком вчера-сегодня', plan.cabs + ' (база ' + plan.base + ')'],
+    ['Кампаний с трафиком', plan.liveCamps + ' (~' + plan.perCab + ' на кабинет)'],
+    ['Ёмкость по кабинетам (до базы)', '+' + plan.capCabs],
+    ['Профит 7д кампаний с трафиком', fm(plan.profit7) + ' при ROI ' + fr(plan.roiNow)],
+    ['Риск-бюджет на тесты (' + c.riskPct + '% профита 7д)', plan.riskBudget + '$'],
+    ['ДОБАВИТЬ СЕЙЧАС', plan.addTotal + ' кампани(й)' + (alloc.length ? ': ' + alloc.map(a => a.geo + ' +' + a.n + (a.creo ? ' «' + a.creo + '»' : '') + ' (тест до −' + a.limit + '$)').join(', ') : ' — ёмкости или плюсовых гео нет')],
+    ['Худший случай (ни одна не сконвертит)', '−' + plan.worstCase + '$'],
+    ['Отключаемых кампаний этим прогоном', String(plan.offCount)],
+    ['У отключаемых за 7д', 'спенд ' + Math.round(plan.offCost7) + '$, профит ' + fm(plan.offProfit7)],
+    ['ROI портфеля после отключения', fr(plan.roiNow) + ' → ' + fr(plan.roiAfterOff)],
+  ], null, [300, 640]);
+  writeSheet(ss, 'Топ крео', head,
+    ['Креатив', 'Профит 7д', 'ROI 7д %', 'Продаж 7д', 'Лучшие гео'],
+    topCreos.map(t => [t.name, r1(t.profit7), r1(t.roi7), t.sales7,
+      t.geos.map(x => x.geo + ' ' + fm(x.profit) + ' (' + fr(x.roi) + ', ' + x.sales + ' прод)').join(' · ')]),
+    null, [170, 80, 70, 70, 560]);
   const all = ids.slice().sort((a, b) => profit(m7of(b)) - profit(m7of(a)));
   writeSheet(ss, 'Кампании', head,
-    ['ID', 'Кампания', 'Гео', 'Статус КТ', 'Кликов вчера', 'С трафиком', 'Креатив', 'ROI 3д %', 'Продаж 3д', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Доход 7д (подтв.)', 'Расход 7д', 'Холд 7д'],
+    ['ID', 'Кампания', 'Гео', 'Статус КТ', 'Кликов вчера-сегодня', 'С трафиком', 'Креатив', 'ROI 3д %', 'Продаж 3д', 'Профит 3д', 'ROI 7д %', 'Продаж 7д', 'Профит 7д', 'Доход 7д (подтв.)', 'Расход 7д', 'Холд 7д'],
     all.map(id => [id, byid[id].name, geoOf(byid[id].name), byid[id].state || '', clicksY(id), live.has(id) ? 'да' : 'нет', top(campCreo[id]),
       r1(roi(m3of(id))), m3of(id).sales, r1(profit(m3of(id))), r1(roi(m7of(id))), m7of(id).sales, r1(profit(m7of(id))),
       r1(m7of(id).revenue), r1(m7of(id).cost), r1(m7of(id).hold)]),
