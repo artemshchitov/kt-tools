@@ -37,6 +37,7 @@ page = """<!doctype html>
 <main>
   <h1>KT pixel / token / домен</h1>
   <p class="sub">Букмарклет для админки Кейтаро: находит кампании по куску нейминга и меняет в них пиксель, токен и домен.</p>
+  <p class="sub">Ещё инструмент: <a href="fb.html">FB: снятие ложных отклонов</a>.</p>
 
   <p><a class="btn" href="%s" onclick="alert('Не нажимай — перетащи кнопку на панель закладок'); return false;">KT pixel/token</a></p>
 
